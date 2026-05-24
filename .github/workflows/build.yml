@@ -51,21 +51,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'  # 启用 npm 依赖缓存，大幅缩短构建时间<websource>source_group_web_2</websource>
+          cache: 'npm'  # 启用 npm 依赖缓存，大幅缩短构建时间
 
       - name: Install dependencies
         run: npm install
 
       - name: Build (${{ matrix.target }} ${{ matrix.arch || '' }})
+        shell: bash
         env:
           BUILD_ARCH: ${{ matrix.arch || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 注入 Token 解决 electron-builder 下载报错
         run: |
-          if [ -n "$BUILD_ARCH" ]; then
-            npm run build:${{ matrix.target }} -- --$BUILD_ARCH
-          else
+          if ($env:BUILD_ARCH) {
+            npm run build:${{ matrix.target }} -- --${{ matrix.arch }}
+          } else {
             npm run build:${{ matrix.target }}
-          fi
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
