@@ -23,7 +23,9 @@
       "csv-worker.js",
       "index.html",
       "styles.css",
-      "renderer.js"
+      "renderer.js",
+      "native/csv-native.node",
+      "native/package.json"
     ],
     "win": {
       "target": [
@@ -61,5 +63,8 @@
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "@napi-rs/cli": "^3.6.2"
   }
 }
