@@ -297,7 +297,9 @@ class CsvEngine {
     const rowCount = this.offsets.length - 1;
     const lines = [];
     for (let i = 0; i <= rowCount; i++) {
-      const text = await this.readRowBytes(i);
+      let text = await this.readRowBytes(i);
+      // Strip trailing newlines — readRowBytes includes the \n between rows
+      text = text.replace(/[\r\n]+$/, '');
       lines.push(text);
     }
 
