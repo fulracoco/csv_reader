@@ -1,0 +1,12 @@
+{
+  "name": "csv-reader",
+  "version": "1.0.0",
+  "description": "High-performance CSV file reader for large files",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

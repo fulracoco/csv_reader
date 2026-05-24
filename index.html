@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>CSV Reader</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Welcome screen -->
+    <div id="welcome" class="welcome">
+      <div class="welcome-content">
+        <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        <h1>CSV Reader</h1>
+        <p>Open a CSV file to get started. Supports files of any size.</p>
+        <button id="btn-open-welcome" class="btn-primary">Open CSV File</button>
+      </div>
+    </div>
+
+    <!-- Main view (hidden until file is opened) -->
+    <div id="main-view" class="main-view hidden">
+      <!-- Toolbar -->
+      <div id="toolbar" class="toolbar">
+        <button id="btn-open" class="btn-toolbar" title="Open CSV File">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Open
+        </button>
+        <div class="toolbar-separator"></div>
+        <span id="file-name" class="file-name"></span>
+        <span id="file-stats" class="file-stats"></span>
+        <button id="btn-export" class="btn-toolbar" title="Export selected rows/columns as CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Export
+        </button>
+        <div class="toolbar-spacer"></div>
+        <label class="row-height-label" title="Row height in pixels">
+          Row:
+          <select id="row-height-select">
+            <option value="28">28px</option>
+            <option value="40" selected>40px</option>
+            <option value="56">56px</option>
+            <option value="72">72px</option>
+            <option value="100">100px</option>
+          </select>
+        </label>
+      </div>
+
+      <!-- Table area -->
+      <div id="table-area" class="table-area">
+        <!-- Header row (wrapped for horizontal scroll sync) -->
+        <div id="table-header-wrap" class="table-header-wrap">
+          <div id="table-header" class="table-header">
+            <div class="header-cell row-num">#</div>
+          </div>
+        </div>
+
+        <!-- Scrollable body -->
+        <div id="scroll-container" class="scroll-container">
+          <div id="scroll-inner" class="scroll-inner">
+            <div id="rows-container" class="rows-container"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <div id="status-bar" class="status-bar">
+        <span id="status-text">Ready</span>
+      </div>
+    </div>
+
+    <!-- Detail panel -->
+    <div id="detail-panel" class="detail-panel hidden">
+      <div class="detail-header">
+        <h3>Cell Content</h3>
+        <div class="detail-info">
+          <span id="detail-col"></span>
+          <span id="detail-row"></span>
+        </div>
+        <div class="detail-actions">
+          <button id="btn-copy" class="btn-small" title="Copy to clipboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            Copy
+          </button>
+          <button id="btn-close-detail" class="btn-small" title="Close panel">&times;</button>
+        </div>
+      </div>
+      <div class="detail-body">
+        <textarea id="detail-content" readonly spellcheck="false"></textarea>
+      </div>
+    </div>
+  </div>
+
+    <!-- Export Modal -->
+    <div id="export-modal" class="modal-overlay hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Export CSV</h3>
+          <button id="btn-close-export" class="btn-small">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="export-section">
+            <label class="export-label">Columns</label>
+            <div class="export-columns" id="export-columns"></div>
+          </div>
+          <div class="export-section export-row-range">
+            <label class="export-label">Rows</label>
+            <div class="export-row-inputs">
+              <span>From</span>
+              <input id="export-row-from" type="number" min="1" value="1" step="1">
+              <span>to</span>
+              <input id="export-row-to" type="number" min="1" value="1" step="1">
+              <span class="export-row-total" id="export-row-total"></span>
+            </div>
+            <div class="export-row-presets">
+              <button class="btn-preset" data-preset="all">All rows</button>
+              <button class="btn-preset" data-preset="selected">Selected rows</button>
+            </div>
+          </div>
+          <div id="export-status" class="export-status"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-cancel-export" class="btn-small">Cancel</button>
+          <button id="btn-do-export" class="btn-primary">Export CSV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
