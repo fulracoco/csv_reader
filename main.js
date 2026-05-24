@@ -186,13 +186,13 @@ class CsvEngine {
       if (range.startRow === range.endRow) {
         const parsed = parseCSVLine(text, this.delimiter);
         results.push({ index: range.indices[0], data: parsed });
-        this.addToCache(range.startRow, parsed);
+        this.addToCache(range.startRow, parsed.map(c => truncateCell(c)));
       } else {
         const lines = splitCSVRows(text);
         for (let j = 0; j < lines.length && j < range.indices.length; j++) {
           const parsed = parseCSVLine(lines[j], this.delimiter);
           results.push({ index: range.indices[j], data: parsed });
-          this.addToCache(range.startRow + j, parsed);
+          this.addToCache(range.startRow + j, parsed.map(c => truncateCell(c)));
         }
       }
     }
