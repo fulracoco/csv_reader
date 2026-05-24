@@ -1,0 +1,22 @@
+[package]
+name = "csv-native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["napi4"] }
+napi-derive = "2"
+memchr = "2"
+memmap2 = "0.9"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
