@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('csvAPI', {
   getRows: (start, count) => ipcRenderer.invoke('get-rows', start, count),
   getRowsByIndex: (indices) => ipcRenderer.invoke('get-rows-by-index', indices),
   getCellContent: (row, col) => ipcRenderer.invoke('get-cell-content', row, col),
+  updateCell: (row, col, content) => ipcRenderer.invoke('update-cell', row, col, content),
   exportCSV: (colIndices, startRow, endRow) =>
     ipcRenderer.invoke('export-csv', colIndices, startRow, endRow),
   onProgress: (callback) => {

@@ -289,6 +289,56 @@ class CsvEngine {
     return parsed[colIndex] || '';
   }
 
+  async updateCell(rowIndex, colIndex, newContent) {
+    const dataRowIndex = rowIndex + 1;
+    if (dataRowIndex >= this.offsets.length) throw new Error('Row out of range');
+
+    // Read all rows, modify target, rewrite entire file
+    const rowCount = this.offsets.length - 1;
+    const lines = [];
+    for (let i = 0; i <= rowCount; i++) {
+      const text = await this.readRowBytes(i);
+      lines.push(text);
+    }
+
+    // Modify the target row
+    const targetLine = lines[dataRowIndex];
+    const parsed = parseCSVLine(targetLine, this.delimiter);
+    if (colIndex >= parsed.length) {
+      while (parsed.length <= colIndex) parsed.push('');
+    }
+    parsed[colIndex] = newContent;
+
+    // Reconstruct the modified row
+    lines[dataRowIndex] = parsed.map(c => csvQuote(c)).join(this.delimiter);
+
+    // Rewrite the file
+    const fd = await fs.promises.open(this.filePath, 'w');
+    try {
+      if (this.encoding === 'utf16le') {
+        await fd.write(Buffer.from([0xFF, 0xFE]));
+      } else {
+        await fd.write(Buffer.from([0xEF, 0xBB, 0xBF]));
+      }
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i === this.offsets.length - 1 && line === '') continue; // skip trailing empty
+        await fd.write(Buffer.from(line + '\n', this.encoding === 'utf16le' ? 'utf16le' : 'utf8'));
+      }
+    } finally {
+      await fd.close();
+    }
+
+    // Update cache entry
+    this.cache.set(dataRowIndex, parsed);
+
+    // Rebuild index (byte offsets changed)
+    this.cache.clear();
+    this.cacheKeys = [];
+    this.offsets = [];
+    await this.buildIndex();
+  }
+
   async close() {
     if (this.fd) {
       await this.fd.close();
@@ -601,5 +651,16 @@ ipcMain.handle('get-cell-content', async (_, row, col) => {
   } catch (err) {
     console.error('Error reading cell:', err);
     return '';
+  }
+});
+
+ipcMain.handle('update-cell', async (_, row, col, content) => {
+  if (!csvEngine) return { error: 'No file open' };
+  try {
+    await csvEngine.updateCell(row, col, content);
+    return { ok: true };
+  } catch (err) {
+    console.error('Error updating cell:', err);
+    return { error: err.message };
   }
 });

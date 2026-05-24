@@ -450,6 +450,16 @@ html, body {
   line-height: 1;
 }
 
+.btn-small.btn-save {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+.btn-small.btn-save:hover {
+  background: #81d4fa;
+}
+
 .detail-body {
   flex: 1;
   min-height: 0;

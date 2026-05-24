@@ -35,6 +35,9 @@ let elementPool = [];
 let visibleStart = 0;
 let visibleEnd = 0;
 let selectedCell = null;
+let isEditing = false;
+let editingCell = null;    // { row, col } of the cell being edited
+let originalContent = '';
 let scrollRAF = null;
 let isScrolling = false;
 
@@ -50,6 +53,7 @@ document.getElementById('btn-open-welcome').addEventListener('click', openFile);
 document.getElementById('btn-open').addEventListener('click', openFile);
 document.getElementById('btn-close-detail').addEventListener('click', closeDetail);
 document.getElementById('btn-copy').addEventListener('click', copyCellContent);
+document.getElementById('btn-edit').addEventListener('click', toggleEdit);
 document.getElementById('btn-export').addEventListener('click', openExportDialog);
 document.getElementById('btn-close-export').addEventListener('click', closeExportDialog);
 document.getElementById('btn-cancel-export').addEventListener('click', closeExportDialog);
@@ -85,8 +89,12 @@ window.csvAPI.onMenuOpenFile(() => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    closeDetail();
-    clearSelection();
+    if (isEditing) {
+      exitEditMode();
+    } else {
+      closeDetail();
+      clearSelection();
+    }
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
     if (selectedCell && !detailPanel.classList.contains('hidden')) {
@@ -320,6 +328,7 @@ function setupVirtualScroll() {
       cell.style.width = colWidth + 'px';
       cell.style.minWidth = colWidth + 'px';
       cell.addEventListener('click', (e) => onCellClick(e, cell));
+      cell.addEventListener('dblclick', (e) => onCellDoubleClick(e, cell));
       row.appendChild(cell);
     }
 
@@ -489,6 +498,7 @@ function createRowElement() {
     cell.style.width = colWidth + 'px';
     cell.style.minWidth = colWidth + 'px';
     cell.addEventListener('click', (e) => onCellClick(e, cell));
+    cell.addEventListener('dblclick', (e) => onCellDoubleClick(e, cell));
     row.appendChild(cell);
   }
 
@@ -501,6 +511,11 @@ function onCellClick(e, cell) {
   const rowIndex = parseInt(cell.dataset.rowIndex);
   const colIndex = parseInt(cell.dataset.colIndex);
   if (isNaN(rowIndex) || isNaN(colIndex)) return;
+
+  // Save pending edit before switching cells
+  if (isEditing && editingCell && (editingCell.row !== rowIndex || editingCell.col !== colIndex)) {
+    saveEdit();
+  }
 
   // Clear multi-selection when clicking a single cell
   clearSelection();
@@ -528,6 +543,97 @@ async function openDetail(row, col) {
 function closeDetail() {
   detailPanel.classList.add('hidden');
   selectedCell = null;
+  exitEditMode();
+}
+
+// ─── Cell Editing ───────────────────────────────────────────────────────────
+
+function toggleEdit() {
+  if (!selectedCell) return;
+  if (isEditing) {
+    saveEdit();
+  } else {
+    enterEditMode(selectedCell.row, selectedCell.col);
+  }
+}
+
+function enterEditMode(row, col) {
+  if (isEditing) saveEdit();
+  isEditing = true;
+  editingCell = { row, col };
+  originalContent = detailContent.value;
+  detailContent.readOnly = false;
+  detailContent.focus();
+  updateEditButton();
+}
+
+function exitEditMode() {
+  isEditing = false;
+  editingCell = null;
+  originalContent = '';
+  detailContent.readOnly = true;
+  updateEditButton();
+}
+
+function updateEditButton() {
+  const btn = document.getElementById('btn-edit');
+  if (isEditing) {
+    btn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+      Save`;
+    btn.classList.add('btn-save');
+  } else {
+    btn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+      </svg>
+      Edit`;
+    btn.classList.remove('btn-save');
+  }
+}
+
+async function saveEdit() {
+  if (!editingCell || !isEditing) return;
+  const newContent = detailContent.value;
+  if (newContent === originalContent) {
+    exitEditMode();
+    return;
+  }
+
+  const { row, col } = editingCell;
+  try {
+    const result = await window.csvAPI.updateCell(row, col, newContent);
+    if (result.error) {
+      showToast('Save failed: ' + result.error);
+      return;
+    }
+    showToast('Saved ' + formatBytes(newContent.length));
+    statusText.textContent = 'Cell [' + (row + 1) + ', ' + (col + 1) + '] — ' + formatBytes(newContent.length);
+    originalContent = newContent;
+    // Invalidate cache so re-render picks up changes
+    visibleStart = -1;
+    visibleEnd = -1;
+    scheduleRender();
+  } catch (err) {
+    showToast('Save failed: ' + err.message);
+  }
+  exitEditMode();
+}
+
+// Inline editing for table cells (double-click)
+async function onCellDoubleClick(e, cell) {
+  e.stopPropagation();
+  const rowIndex = parseInt(cell.dataset.rowIndex);
+  const colIndex = parseInt(cell.dataset.colIndex);
+  if (isNaN(rowIndex) || isNaN(colIndex)) return;
+
+  if (isEditing) await saveEdit();
+  openDetail(rowIndex, colIndex);
+  // Enter edit mode after detail loads
+  setTimeout(() => enterEditMode(rowIndex, colIndex), 100);
 }
 
 // ─── Export Dialog ──────────────────────────────────────────────────────────
