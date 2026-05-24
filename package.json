@@ -1,6 +1,6 @@
 {
   "name": "csv-reader",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "High-performance CSV file reader for large files",
   "author": "fulracoco",
   "main": "main.js",
@@ -28,7 +28,10 @@
       "target": [
         {
           "target": "portable",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },
@@ -36,7 +39,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },
@@ -44,7 +50,9 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     }
