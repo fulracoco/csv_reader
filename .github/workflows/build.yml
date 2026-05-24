@@ -127,6 +127,9 @@ jobs:
           fi
           echo "Native module ready: $(ls -lh $TARGET_DIR/$LIB_NAME)"
 
+          # Copy to native/ so electron-builder can find it
+          cp "$TARGET_DIR/$LIB_NAME" .
+
       # ── Build Electron app ──────────────────────────────────────────
       - name: Build (${{ matrix.target }} ${{ matrix.electron-arch }})
         shell: bash

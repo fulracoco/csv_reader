@@ -1,8 +1,8 @@
 # CSV Reader
 
-A cross-platform desktop application for reading and exporting large CSV files. Built with Electron.
+A cross-platform desktop application for reading and exporting large CSV files. Built with Electron + Rust (napi-rs).
 
-Handles files of any size (tested with 300MB+) by using file-backed byte-offset indexing — the entire file is never loaded into memory.
+Handles files of any size (tested with 300MB+) by using memory-mapped byte-offset indexing in Rust — the entire file is never loaded into memory.
 
 ![screenshot](screenshot.png)
 
@@ -18,7 +18,8 @@ Handles files of any size (tested with 300MB+) by using file-backed byte-offset 
 
 ## Prerequisites
 
-[Node.js](https://nodejs.org/) v18 or later.
+- [Node.js](https://nodejs.org/) v18 or later
+- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
 
 ## Quick Start
 
@@ -26,6 +27,18 @@ Handles files of any size (tested with 300MB+) by using file-backed byte-offset 
 git clone git@github.com:fulracoco/csv_reader.git
 cd csv-reader
 npm install
+
+# Build the native module
+cd native
+cargo build --release
+# Windows:
+cp target\release\csv_native.dll csv-native.node
+# Linux:
+# cp target/release/libcsv_native.so csv-native.node
+# macOS:
+# cp target/release/libcsv_native.dylib csv-native.node
+cd ..
+
 npm start
 ```
 
@@ -46,19 +59,21 @@ npm start
 
 | File | Purpose |
 |---|---|
-| `main.js` | Electron main process: `CsvEngine` class (byte-offset index, batch reads, LRU cache, export streaming), IPC handlers |
+| `main.js` | Electron main process: window management, IPC handlers, menu |
 | `preload.js` | Context bridge — safe API exposed to renderer |
+| `csv-worker.js` | Worker thread that loads and drives the Rust native module |
+| `native/` | Rust napi-rs crate — memory-mapped CSV engine: indexing, reading, writing, export |
 | `index.html` | UI layout: welcome screen, toolbar, virtual table, detail panel, export modal |
 | `styles.css` | Dark theme, table styling, modal, scrollbar customization |
 | `renderer.js` | Virtual scrolling engine, DOM pool recycling, cell interaction, export dialog |
 
 ### How It Handles Large Files
 
-1. **One-pass indexing** — reads the file byte-by-byte, records row start positions. For 200K rows this takes ~100ms and uses ~1.5MB of memory.
-2. **On-demand reading** — only rows visible in the viewport are read from disk (~30 rows).
-3. **Batch I/O** — consecutive uncached rows are read in a single disk operation.
-4. **LRU cache** — 3,000 most recently accessed rows kept in memory.
-5. **Truncated IPC** — the main process sends only the first 500 characters of each cell to the renderer. For a file with ~800KB cells, this reduces IPC transfer from 24MB to 30KB per viewport (99.9% reduction). Full content is loaded on demand when a cell is clicked.
+1. **Memory-mapped I/O** — the file is mapped into virtual memory (not read into RAM), so the OS handles paging transparently.
+2. **One-pass indexing** — scans the file byte-by-byte in Rust, records row start positions. For 200K rows this takes ~100ms and uses ~1.5MB of memory.
+3. **On-demand reading** — only rows visible in the viewport are read from the mmap (~30 rows).
+4. **LRU cache** — 500 most recently accessed rows kept in memory.
+5. **Truncated IPC** — the worker sends only the first 500 characters of each cell to the renderer. For a file with ~800KB cells, this reduces IPC transfer from 24MB to 30KB per viewport (99.9% reduction). Full content is loaded on demand when a cell is clicked.
 6. **Streaming export** — writes directly to the output file row by row, never holds the full dataset in memory.
 
 ## Keyboard Shortcuts
