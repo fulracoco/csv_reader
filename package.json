@@ -6,14 +6,20 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "generate-icon": "node scripts/generate-icon.js",
     "build:win": "electron-builder --win portable",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --win portable --mac --linux"
+    "build:all": "electron-builder --win portable --mac --linux",
+    "prebuild:win": "npm run generate-icon",
+    "prebuild:mac": "npm run generate-icon",
+    "prebuild:linux": "npm run generate-icon",
+    "prebuild:all": "npm run generate-icon"
   },
   "build": {
     "appId": "com.csvreader.app",
     "productName": "CSV Reader",
+    "icon": "build/icon.png",
     "directories": {
       "output": "dist"
     },
@@ -62,7 +68,8 @@
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "sharp": "^0.34.5"
   },
   "dependencies": {
     "@napi-rs/cli": "^3.6.2"
