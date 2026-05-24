@@ -23,6 +23,10 @@
     "directories": {
       "output": "dist"
     },
+    "asarUnpack": [
+      "native/csv-native.node",
+      "csv-worker.js"
+    ],
     "files": [
       "main.js",
       "preload.js",
