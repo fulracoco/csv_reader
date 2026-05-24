@@ -62,6 +62,7 @@ jobs:
         shell: bash
         env:
           BUILD_ARCH: ${{ matrix.arch || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "$BUILD_ARCH" ]; then
             npm run build:${{ matrix.target }} -- --${{ matrix.arch }}
@@ -101,4 +102,4 @@ jobs:
           prerelease: false
           generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
