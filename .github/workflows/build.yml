@@ -152,6 +152,18 @@ jobs:
             mv "$f" "${base}-${{ matrix.electron-arch }}.exe"
           done
 
+      # ── Standardize Linux AppImage naming ───────────────────────────
+      - name: Standardize Linux AppImage naming
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          for f in dist/*.AppImage; do
+            if [ -f "$f" ]; then
+              base="${f%.AppImage}"
+              mv "$f" "${base}-${{ matrix.electron-arch }}.AppImage"
+            fi
+          done
+
       # ── Upload artifact ────────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v5
@@ -172,10 +184,27 @@ jobs:
         with:
           path: dist
 
+      - name: List downloaded artifacts
+        run: find dist -type f
+
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          # Move all artifacts from subdirectories to dist root
+          find dist -type f ! -path "dist/*" -o -type f -path "dist/*/*" | while read file; do
+            if [ -f "$file" ]; then
+              mv "$file" "dist/$(basename "$file")"
+            fi
+          done
+          # Clean up empty directories
+          find dist -type d -empty -delete
+          # List final artifacts
+          ls -lh dist/
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/**/*
+          files: dist/*
           draft: false
           prerelease: false
           generate_release_notes: true
