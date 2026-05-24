@@ -4,6 +4,8 @@ A cross-platform desktop application for reading and exporting large CSV files. 
 
 Handles files of any size (tested with 300MB+) by using file-backed byte-offset indexing — the entire file is never loaded into memory.
 
+![screenshot](screenshot.png)
+
 ## Features
 
 - **File-backed indexing** — scans the file once to build a byte-offset index, then reads only visible rows on demand
