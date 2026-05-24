@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux
+            artifact-name: csv-reader-linux-x64
+            artifact-path: dist/*.AppImage
+          - os: macos-latest
+            target: mac
+            artifact-name: csv-reader-macos
+            artifact-path: dist/*.dmg
+          - os: windows-latest
+            target: win
+            artifact-name: csv-reader-win-x64
+            artifact-path: dist/*.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build (${{ matrix.target }})
+        run: npm run build:${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}

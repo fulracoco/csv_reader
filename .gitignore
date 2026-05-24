@@ -1,4 +1,5 @@
 node_modules/
+dist/
 *.csv
 .claude/
 .DS_Store
