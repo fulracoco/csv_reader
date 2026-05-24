@@ -5,37 +5,62 @@ permissions:
 
 on:
   push:
-    branches: [main]  # 1. 监听 main 分支的日常推送（用于构建测试）
+    branches: [main]
     tags:
-      - 'v*'          # 2. 监听带有版本号的标签推送（用于触发发布）
+      - 'v*'
   pull_request:
-    branches: [main]  # 3. 监听 PR，确保合并前的代码质量
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
-    # 只要满足上述任意触发条件，都会先跑 build 任务
     strategy:
       matrix:
         include:
+          # ── Linux x64 ──────────────────────────────────────────────
           - os: ubuntu-latest
             target: linux
+            electron-arch: x64
             artifact-name: csv-reader-linux-x64
             artifact-path: dist/*.AppImage
+            rust-target: ''
+            cross-packages: ''
+
+          # ── Linux ARM64 (cross-compile on x64 runner) ──────────────
+          - os: ubuntu-latest
+            target: linux
+            electron-arch: arm64
+            artifact-name: csv-reader-linux-arm64
+            artifact-path: dist/*.AppImage
+            rust-target: aarch64-unknown-linux-gnu
+            cross-packages: gcc-aarch64-linux-gnu
+
+          # ── macOS (Apple Silicon runner, native arm64) ─────────────
           - os: macos-latest
             target: mac
+            electron-arch: ''
             artifact-name: csv-reader-macos
             artifact-path: dist/*.dmg
+            rust-target: ''
+            cross-packages: ''
+
+          # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
             target: win
-            arch: x64
+            electron-arch: x64
             artifact-name: csv-reader-win-x64
             artifact-path: dist/*.exe
+            rust-target: ''
+            cross-packages: ''
+
+          # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
             target: win
-            arch: arm64
+            electron-arch: arm64
             artifact-name: csv-reader-win-arm64
             artifact-path: dist/*.exe
+            rust-target: aarch64-pc-windows-msvc
+            cross-packages: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -43,11 +68,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── Rust toolchain ──────────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      # ── System dependencies for Linux ───────────────────────────────
       - name: Install Linux System Dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils
+          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils ${{ matrix.cross-packages }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -58,28 +90,67 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build (${{ matrix.target }} ${{ matrix.arch || '' }})
+      # ── Build native module ─────────────────────────────────────────
+      - name: Build native module (${{ matrix.electron-arch || 'native' }})
+        shell: bash
+        working-directory: native
+        run: |
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            echo "Cross-compiling for ${{ matrix.rust-target }}"
+            case "${{ matrix.rust-target }}" in
+              aarch64-unknown-linux-gnu)
+                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+                ;;
+            esac
+            cargo build --release --target ${{ matrix.rust-target }}
+          else
+            echo "Building natively"
+            cargo build --release
+          fi
+
+          # Copy the output to csv-native.node (handle per-platform naming)
+          TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            TARGET_DIR="$TARGET_DIR/${{ matrix.rust-target }}"
+          fi
+          TARGET_DIR="$TARGET_DIR/release"
+
+          if [ -f "$TARGET_DIR/csv_native.dll" ]; then
+            cp "$TARGET_DIR/csv_native.dll" csv-native.node
+          elif [ -f "$TARGET_DIR/libcsv_native.so" ]; then
+            cp "$TARGET_DIR/libcsv_native.so" csv-native.node
+          elif [ -f "$TARGET_DIR/libcsv_native.dylib" ]; then
+            cp "$TARGET_DIR/libcsv_native.dylib" csv-native.node
+          else
+            echo "ERROR: Built library not found in $TARGET_DIR"
+            ls -la "$TARGET_DIR/" || true
+            exit 1
+          fi
+          echo "Native module ready: $(ls -lh csv-native.node)"
+
+      # ── Build Electron app ──────────────────────────────────────────
+      - name: Build (${{ matrix.target }} ${{ matrix.electron-arch }})
         shell: bash
         env:
-          BUILD_ARCH: ${{ matrix.arch || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "$BUILD_ARCH" ]; then
-            npm run build:${{ matrix.target }} -- --${{ matrix.arch }}
+          if [ -n "${{ matrix.electron-arch }}" ]; then
+            npm run build:${{ matrix.target }} -- --${{ matrix.electron-arch }}
           else
             npm run build:${{ matrix.target }}
           fi
 
+      # ── Rename Windows artifacts (add arch suffix) ─────────────────
       - name: Rename Windows artifacts (add arch suffix)
         if: matrix.target == 'win'
         shell: bash
         run: |
           for f in dist/*.exe; do
             base="${f%.exe}"
-            mv "$f" "${base}-${{ matrix.arch }}.exe"
+            mv "$f" "${base}-${{ matrix.electron-arch }}.exe"
           done
 
-      # 将打包产物暂存为 Artifact
+      # ── Upload artifact ────────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -87,22 +158,18 @@ jobs:
           path: ${{ matrix.artifact-path }}
 
   release:
-    # 1. 依赖 build 任务必须先成功完成
     needs: build
-    # 2. 核心逻辑：只有当触发事件是 push 且推送的是标签时，才执行 release 任务
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
-      # 下载前面 build 任务中暂存的产物
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
 
-      # 创建 GitHub Release 并上传文件
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
