@@ -46,8 +46,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils<websource>source_group_web_1</websource>
-
+          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -66,7 +65,7 @@ jobs:
             npm run build:${{ matrix.target }} -- --$BUILD_ARCH
           else
             npm run build:${{ matrix.target }}
-          fi<websource>source_group_web_3</websource>
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
