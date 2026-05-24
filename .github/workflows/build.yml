@@ -60,13 +60,13 @@ jobs:
         shell: bash
         env:
           BUILD_ARCH: ${{ matrix.arch || '' }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 注入 Token 解决 electron-builder 下载报错
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ($env:BUILD_ARCH) {
+          if [ -n "$BUILD_ARCH" ]; then
             npm run build:${{ matrix.target }} -- --${{ matrix.arch }}
-          } else {
+          else
             npm run build:${{ matrix.target }}
-          }
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
