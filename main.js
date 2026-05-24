@@ -18,7 +18,7 @@ class CsvEngine {
     this.bomOffset = 0;
     this.cache = new Map();
     this.cacheKeys = [];
-    this.cacheMax = 3000;
+    this.cacheMax = 500;
   }
 
   async open(filePath, onProgress) {
@@ -27,7 +27,7 @@ class CsvEngine {
     const stat = await this.fd.stat();
     this.fileSize = stat.size;
 
-    const bom = Buffer.alloc(4);
+    const bom = Buffer.allocUnsafe(4);
     await this.fd.read(bom, 0, 4, 0);
     if (bom[0] === 0xEF && bom[1] === 0xBB && bom[2] === 0xBF) {
       this.encoding = 'utf8';
@@ -77,7 +77,7 @@ class CsvEngine {
 
     while (bytePos < this.fileSize) {
       const toRead = Math.min(CHUNK_SIZE, this.fileSize - bytePos);
-      const buffer = Buffer.alloc(toRead);
+      const buffer = Buffer.allocUnsafe(toRead);
       await this.fd.read(buffer, 0, toRead, bytePos);
 
       for (let i = 0; i < buffer.length; i++) {
@@ -136,7 +136,7 @@ class CsvEngine {
     if (end <= start) return '';
 
     const length = end - start;
-    const buffer = Buffer.alloc(length);
+    const buffer = Buffer.allocUnsafe(length);
     await this.fd.read(buffer, 0, length, start);
 
     if (this.encoding === 'utf16le') {
@@ -155,7 +155,8 @@ class CsvEngine {
 
       if (this.cache.has(rowIndex)) {
         const cached = this.cache.get(rowIndex);
-        this.cacheKeys = this.cacheKeys.filter(k => k !== rowIndex);
+        const idx = this.cacheKeys.indexOf(rowIndex);
+        if (idx !== -1) this.cacheKeys.splice(idx, 1);
         this.cacheKeys.push(rowIndex);
         results.push({ index: i, data: cached });
         continue;
@@ -169,25 +170,29 @@ class CsvEngine {
       }
     }
 
+    const MAX_BATCH = 4 * 1024 * 1024; // 4MB max batch read
+
     for (const range of uncachedRanges) {
       const startByte = this.offsets[range.startRow];
       const endByte = range.endRow + 1 < this.offsets.length
         ? this.offsets[range.endRow + 1]
         : this.fileSize;
-
       const length = endByte - startByte;
-      const buffer = Buffer.alloc(length);
-      await this.fd.read(buffer, 0, length, startByte);
 
-      const text = this.encoding === 'utf16le'
-        ? buffer.toString('utf16le')
-        : buffer.toString('utf8');
-
-      if (range.startRow === range.endRow) {
-        const parsed = parseCSVLine(text, this.delimiter);
-        results.push({ index: range.indices[0], data: parsed });
-        this.addToCache(range.startRow, parsed.map(c => truncateCell(c)));
+      // Large rows: read individually to keep buffer small
+      if (length > MAX_BATCH || range.startRow === range.endRow) {
+        for (let r = range.startRow; r <= range.endRow; r++) {
+          const rowText = await this.readRowBytes(r);
+          const parsed = parseCSVLine(rowText, this.delimiter);
+          results.push({ index: range.indices[r - range.startRow], data: parsed });
+          this.addToCache(r, parsed.map(c => truncateCell(c)));
+        }
       } else {
+        const buffer = Buffer.allocUnsafe(length);
+        await this.fd.read(buffer, 0, length, startByte);
+        const text = this.encoding === 'utf16le'
+          ? buffer.toString('utf16le')
+          : buffer.toString('utf8');
         const lines = splitCSVRows(text);
         for (let j = 0; j < lines.length && j < range.indices.length; j++) {
           const parsed = parseCSVLine(lines[j], this.delimiter);
@@ -270,12 +275,11 @@ class CsvEngine {
   }
 
   addToCache(rowIndex, data) {
-    if (this.cache.has(rowIndex)) {
-      this.cacheKeys = this.cacheKeys.filter(k => k !== rowIndex);
-    }
     this.cache.set(rowIndex, data);
+    const idx = this.cacheKeys.indexOf(rowIndex);
+    if (idx !== -1) this.cacheKeys.splice(idx, 1);
     this.cacheKeys.push(rowIndex);
-    while (this.cacheKeys.length > this.cacheMax) {
+    if (this.cacheKeys.length > this.cacheMax) {
       const oldest = this.cacheKeys.shift();
       this.cache.delete(oldest);
     }
