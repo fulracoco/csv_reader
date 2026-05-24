@@ -78,6 +78,11 @@ window.addEventListener('resize', () => {
   }
 });
 
+// Menu bar "Open File" event
+window.csvAPI.onMenuOpenFile(() => {
+  openFile();
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     closeDetail();

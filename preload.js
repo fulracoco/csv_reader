@@ -17,4 +17,9 @@ contextBridge.exposeInMainWorld('csvAPI', {
     ipcRenderer.on('export-progress', handler);
     return () => ipcRenderer.removeListener('export-progress', handler);
   },
+  onMenuOpenFile: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('menu-open-file', handler);
+    return () => ipcRenderer.removeListener('menu-open-file', handler);
+  },
 });
