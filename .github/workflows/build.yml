@@ -24,16 +24,14 @@ jobs:
             artifact-name: csv-reader-linux-x64
             artifact-path: dist/*.AppImage
             rust-target: ''
-            cross-packages: ''
 
-          # ── Linux ARM64 (cross-compile on x64 runner) ──────────────
-          - os: ubuntu-latest
+          # ── Linux ARM64 (使用原生 ARM64 运行器，无需交叉编译) ────────
+          - os: ubuntu-24.04-arm 
             target: linux
             electron-arch: arm64
             artifact-name: csv-reader-linux-arm64
             artifact-path: dist/*.AppImage
-            rust-target: aarch64-unknown-linux-gnu
-            cross-packages: gcc-aarch64-linux-gnu
+            rust-target: ''
 
           # ── macOS (Apple Silicon runner, native arm64) ─────────────
           - os: macos-latest
@@ -42,7 +40,6 @@ jobs:
             artifact-name: csv-reader-macos
             artifact-path: dist/*.dmg
             rust-target: ''
-            cross-packages: ''
 
           # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
@@ -51,7 +48,6 @@ jobs:
             artifact-name: csv-reader-win-x64
             artifact-path: dist/*.exe
             rust-target: ''
-            cross-packages: ''
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
@@ -60,7 +56,6 @@ jobs:
             artifact-name: csv-reader-win-arm64
             artifact-path: dist/*.exe
             rust-target: aarch64-pc-windows-msvc
-            cross-packages: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -76,10 +71,11 @@ jobs:
 
       # ── System dependencies for Linux ───────────────────────────────
       - name: Install Linux System Dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils ${{ matrix.cross-packages }}
+          # 移除了交叉编译工具链和 QEMU 相关包
+          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -97,36 +93,31 @@ jobs:
         run: |
           if [ -n "${{ matrix.rust-target }}" ]; then
             echo "Cross-compiling for ${{ matrix.rust-target }}"
-            case "${{ matrix.rust-target }}" in
-              aarch64-unknown-linux-gnu)
-                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-                ;;
-            esac
+            # Windows ARM64 依然需要指定链接器或环境变量（如果 rustup 没自动处理）
+            if [ "${{ matrix.rust-target }}" = "aarch64-pc-windows-msvc" ]; then
+              echo "Setting up Windows ARM64 cross-compile env..."
+            fi
             cargo build --release --target ${{ matrix.rust-target }}
           else
             echo "Building natively"
             cargo build --release
           fi
-
-          # Copy the output to csv-native.node (handle per-platform naming)
-          TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+          
+          # 检查构建产物（根据你的实际文件名调整）
+          # 注意：跨平台编译时产物在 target/<target>/release/ 目录下
           if [ -n "${{ matrix.rust-target }}" ]; then
-            TARGET_DIR="$TARGET_DIR/${{ matrix.rust-target }}"
-          fi
-          TARGET_DIR="$TARGET_DIR/release"
-
-          if [ -f "$TARGET_DIR/csv_native.dll" ]; then
-            cp "$TARGET_DIR/csv_native.dll" csv-native.node
-          elif [ -f "$TARGET_DIR/libcsv_native.so" ]; then
-            cp "$TARGET_DIR/libcsv_native.so" csv-native.node
-          elif [ -f "$TARGET_DIR/libcsv_native.dylib" ]; then
-            cp "$TARGET_DIR/libcsv_native.dylib" csv-native.node
+            TARGET_DIR="target/${{ matrix.rust-target }}/release"
           else
+            TARGET_DIR="target/release"
+          fi
+          
+          LIB_NAME="csv-native.node"
+          if [ ! -f "$TARGET_DIR/$LIB_NAME" ]; then
             echo "ERROR: Built library not found in $TARGET_DIR"
             ls -la "$TARGET_DIR/" || true
             exit 1
           fi
-          echo "Native module ready: $(ls -lh csv-native.node)"
+          echo "Native module ready: $(ls -lh $TARGET_DIR/$LIB_NAME)"
 
       # ── Build Electron app ──────────────────────────────────────────
       - name: Build (${{ matrix.target }} ${{ matrix.electron-arch }})
