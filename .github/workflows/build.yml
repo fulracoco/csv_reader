@@ -22,7 +22,13 @@ jobs:
             artifact-path: dist/*.dmg
           - os: windows-latest
             target: win
+            arch: x64
             artifact-name: csv-reader-win-x64
+            artifact-path: dist/*.exe
+          - os: windows-latest
+            target: win
+            arch: arm64
+            artifact-name: csv-reader-win-arm64
             artifact-path: dist/*.exe
 
     runs-on: ${{ matrix.os }}
@@ -39,8 +45,15 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build (${{ matrix.target }})
-        run: npm run build:${{ matrix.target }}
+      - name: Build (${{ matrix.target }} ${{ matrix.arch || '' }})
+        env:
+          BUILD_ARCH: ${{ matrix.arch || '' }}
+        run: |
+          if [ -n "$BUILD_ARCH" ]; then
+            npm run build:${{ matrix.target }} -- --$BUILD_ARCH
+          else
+            npm run build:${{ matrix.target }}
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
