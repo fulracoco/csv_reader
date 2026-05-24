@@ -472,38 +472,46 @@ function detectDelimiter(text) {
   return best;
 }
 
-// ─── Electron Window ───────────────────────────────────────────────────────
+// ─── i18n ────────────────────────────────────────────────────────────────────
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 900,
-    minHeight: 500,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-    title: 'CSV Reader',
-    backgroundColor: '#1a1a2e',
-  });
+let locale = (app.getLocale() || 'en').startsWith('zh') ? 'zh' : 'en';
 
-  mainWindow.loadFile('index.html');
+const messages = {
+  en: {
+    file: 'File',
+    openFile: 'Open File...',
+    edit: 'Edit',
+    view: 'View',
+    help: 'Help',
+    issues: 'Issues',
+    language: 'Language',
+    english: 'English',
+    chinese: '中文',
+  },
+  zh: {
+    file: '文件',
+    openFile: '打开文件...',
+    edit: '编辑',
+    view: '视图',
+    help: '帮助',
+    issues: '问题反馈',
+    language: '语言',
+    english: 'English',
+    chinese: '中文',
+  },
+};
+
+function t(key) {
+  return messages[locale][key] || key;
 }
 
-app.whenReady().then(() => {
-  createWindow();
-  setApplicationMenu();
-});
-
-function setApplicationMenu() {
+function buildAppMenu() {
   const template = [
     {
-      label: 'File',
+      label: t('file'),
       submenu: [
         {
-          label: 'Open File...',
+          label: t('openFile'),
           accelerator: 'CmdOrCtrl+O',
           click: () => {
             if (mainWindow && !mainWindow.isDestroyed()) {
@@ -516,14 +524,14 @@ function setApplicationMenu() {
       ],
     },
     {
-      label: 'Edit',
+      label: t('edit'),
       submenu: [
         { role: 'copy' },
         { role: 'selectAll' },
       ],
     },
     {
-      label: 'View',
+      label: t('view'),
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
@@ -535,13 +543,31 @@ function setApplicationMenu() {
       ],
     },
     {
-      label: 'Help',
+      label: t('help'),
       submenu: [
         {
-          label: 'Issues',
+          label: t('issues'),
           click: () => {
             shell.openExternal('https://github.com/fulracoco/csv_reader/issues');
           },
+        },
+        { type: 'separator' },
+        {
+          label: t('language'),
+          submenu: [
+            {
+              label: t('english'),
+              type: 'radio',
+              checked: locale === 'en',
+              click: () => { locale = 'en'; buildAppMenu(); },
+            },
+            {
+              label: t('chinese'),
+              type: 'radio',
+              checked: locale === 'zh',
+              click: () => { locale = 'zh'; buildAppMenu(); },
+            },
+          ],
         },
       ],
     },
@@ -567,6 +593,31 @@ function setApplicationMenu() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
+
+// ─── Electron Window ───────────────────────────────────────────────────────
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 900,
+    minHeight: 500,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+    title: 'CSV Reader',
+    backgroundColor: '#1a1a2e',
+  });
+
+  mainWindow.loadFile('index.html');
+}
+
+app.whenReady().then(() => {
+  createWindow();
+  buildAppMenu();
+});
 
 app.on('window-all-closed', async () => {
   if (csvEngine) await csvEngine.close();
