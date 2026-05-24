@@ -1,5 +1,9 @@
 name: Build
 
+# 添加权限声明，确保 GITHUB_TOKEN 有足够的权限处理 Release 或下载资源
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -37,10 +41,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 针对 Linux 环境安装打包 AppImage 所需的系统依赖
+      - name: Install Linux System Dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils<websource>source_group_web_1</websource>
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'  # 启用 npm 依赖缓存，大幅缩短构建时间<websource>source_group_web_2</websource>
 
       - name: Install dependencies
         run: npm install
@@ -48,12 +60,13 @@ jobs:
       - name: Build (${{ matrix.target }} ${{ matrix.arch || '' }})
         env:
           BUILD_ARCH: ${{ matrix.arch || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 注入 Token 解决 electron-builder 下载报错
         run: |
           if [ -n "$BUILD_ARCH" ]; then
             npm run build:${{ matrix.target }} -- --$BUILD_ARCH
           else
             npm run build:${{ matrix.target }}
-          fi
+          fi<websource>source_group_web_3</websource>
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
