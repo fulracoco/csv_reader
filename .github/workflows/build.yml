@@ -133,7 +133,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "${{ matrix.electron-arch }}" ]; then
+          # For native ARM64 runners, don't pass arch flag
+          if [ "${{ matrix.os }}" = "ubuntu-24.04-arm" ]; then
+            npm run build:${{ matrix.target }}
+          elif [ -n "${{ matrix.electron-arch }}" ]; then
             npm run build:${{ matrix.target }} -- --${{ matrix.electron-arch }}
           else
             npm run build:${{ matrix.target }}
