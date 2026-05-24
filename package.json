@@ -20,6 +20,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "csv-worker.js",
       "index.html",
       "styles.css",
       "renderer.js"
