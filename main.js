@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -480,6 +480,17 @@ function setApplicationMenu() {
         { role: 'zoomIn' },
         { role: 'zoomOut' },
         { role: 'resetZoom' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Issues',
+          click: () => {
+            shell.openExternal('https://github.com/fulracoco/csv_reader/issues');
+          },
+        },
       ],
     },
   ];
