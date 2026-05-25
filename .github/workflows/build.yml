@@ -54,16 +54,16 @@ jobs:
             target: win
             rust-target: x86_64-pc-windows-msvc
             artifact-name: csv-reader-win-x64
-            bundles: nsis
-            binary-name: csv-reader.exe
+            bundles: msi,nsis
+            binary-name: csv-reader
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
             target: win
             rust-target: aarch64-pc-windows-msvc
             artifact-name: csv-reader-win-arm64
-            bundles: nsis
-            binary-name: csv-reader.exe
+            bundles: msi,nsis
+            binary-name: csv-reader
 
     runs-on: ${{ matrix.os }}
 
