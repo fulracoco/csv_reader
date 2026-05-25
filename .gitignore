@@ -6,3 +6,7 @@ dist/
 Thumbs.db
 src-tauri/target/
 src-tauri/gen/
+/native/target
+/native/csv-native.node
+/native/csv-native.node.bak
+/native/node-win.zip.bak
