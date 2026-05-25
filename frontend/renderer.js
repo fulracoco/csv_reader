@@ -1,7 +1,19 @@
 // ─── Tauri API wrappers ─────────────────────────────────────────────────────
 
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const tauri = window.__TAURI__ ?? window.__TAURI_INTERNALS__;
+if (!tauri) {
+  document.body.innerHTML = '<div style="padding:40px;color:red;font-family:sans-serif">Error: Tauri runtime not detected. Please run this app with <code>npm run dev</code> or <code>npm run build</code>.</div>';
+  throw new Error('Tauri runtime not available');
+}
+
+const invoke = tauri.core?.invoke ?? tauri.invoke;
+const _listen = tauri.event?.listen ?? tauri.listen;
+
+async function listen(event, callback) {
+  if (_listen) return _listen(event, callback);
+  console.warn('Event listen not available, skipping: ' + event);
+  return () => {};
+}
 
 const api = {
   openFile: () => invoke('open_file'),
@@ -11,8 +23,8 @@ const api = {
   updateCell: (row, col, content) => invoke('update_cell', { row, col, content }),
   exportCSV: (colIndices, startRow, endRow) =>
     invoke('export_csv', { colIndices, startRow, endRow }),
-  onProgress: (callback) => listen('index-progress', (e) => callback(e.payload)),
-  onExportProgress: (callback) => listen('export-progress', (e) => callback(e.payload)),
+  onProgress: (callback) => listen('index-progress', (e) => callback(e.payload ?? e)),
+  onExportProgress: (callback) => listen('export-progress', (e) => callback(e.payload ?? e)),
   onMenuOpenFile: (callback) => listen('menu-open-file', callback),
 };
 
