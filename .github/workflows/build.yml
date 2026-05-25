@@ -24,8 +24,6 @@ jobs:
             artifact-name: csv-reader-linux-x64
             bundles: deb,appimage
             binary-name: csv-reader
-            bundle-glob: src-tauri/target/release/bundle/deb/*.deb
-            bundle-glob2: src-tauri/target/release/bundle/appimage/*.AppImage
 
           # ── Linux ARM64 ────────────────────────────────────────────
           - os: ubuntu-24.04-arm
@@ -34,8 +32,6 @@ jobs:
             artifact-name: csv-reader-linux-arm64
             bundles: deb,appimage
             binary-name: csv-reader
-            bundle-glob: src-tauri/target/release/bundle/deb/*.deb
-            bundle-glob2: src-tauri/target/release/bundle/appimage/*.AppImage
 
           # ── macOS (Apple Silicon) ──────────────────────────────────
           - os: macos-latest
@@ -44,8 +40,6 @@ jobs:
             artifact-name: csv-reader-macos
             bundles: dmg
             binary-name: csv-reader
-            bundle-glob: src-tauri/target/release/bundle/dmg/*.dmg
-            bundle-glob2: ''
 
           # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
@@ -54,8 +48,6 @@ jobs:
             artifact-name: csv-reader-win-x64
             bundles: nsis
             binary-name: csv-reader.exe
-            bundle-glob: src-tauri/target/release/bundle/nsis/*.exe
-            bundle-glob2: ''
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
@@ -64,8 +56,6 @@ jobs:
             artifact-name: csv-reader-win-arm64
             bundles: nsis
             binary-name: csv-reader.exe
-            bundle-glob: src-tauri/target/release/bundle/nsis/*.exe
-            bundle-glob2: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -106,28 +96,29 @@ jobs:
         run: |
           npx tauri build --target ${{ matrix.rust-target }} --bundles ${{ matrix.bundles }}
 
-      - name: Upload installer bundle
+      - name: List built artifacts
+        shell: bash
+        run: |
+          echo "=== bundle directory ==="
+          find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
+          echo "=== release binary ==="
+          ls -lh src-tauri/target/release/${{ matrix.binary-name }} 2>/dev/null || echo "Binary not found at expected path"
+          echo "=== all release dir ==="
+          ls -lh src-tauri/target/release/ 2>/dev/null || echo "release dir not found"
+
+      - name: Upload bundle (all files in bundle dir)
         uses: actions/upload-artifact@v5
-        if: matrix.bundle-glob != ''
-        continue-on-error: true
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.bundle-glob }}
-
-      - name: Upload installer bundle (secondary)
-        uses: actions/upload-artifact@v5
-        if: matrix.bundle-glob2 != ''
-        continue-on-error: true
-        with:
-          name: ${{ matrix.artifact-name }}-appimage
-          path: ${{ matrix.bundle-glob2 }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: warn
 
       - name: Upload raw binary
         uses: actions/upload-artifact@v5
-        continue-on-error: true
         with:
           name: ${{ matrix.artifact-name }}-binary
           path: src-tauri/target/release/${{ matrix.binary-name }}
+          if-no-files-found: error
 
   release:
     needs: build
