@@ -1,6 +1,6 @@
 {
   "productName": "CSV Reader",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "identifier": "com.csvreader.app",
   "build": {
     "frontendDist": "../frontend"
