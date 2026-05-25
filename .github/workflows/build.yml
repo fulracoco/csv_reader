@@ -33,11 +33,19 @@ jobs:
             bundles: deb,appimage
             binary-name: csv-reader
 
-          # ── macOS (Apple Silicon) ──────────────────────────────────
+          # ── macOS x64 (Intel) ──────────────────────────────────────
+          - os: macos-latest
+            target: mac
+            rust-target: x86_64-apple-darwin
+            artifact-name: csv-reader-macos-x64
+            bundles: dmg
+            binary-name: csv-reader
+
+          # ── macOS ARM64 (Apple Silicon) ────────────────────────────
           - os: macos-latest
             target: mac
             rust-target: aarch64-apple-darwin
-            artifact-name: csv-reader-macos
+            artifact-name: csv-reader-macos-arm64
             bundles: dmg
             binary-name: csv-reader
 
