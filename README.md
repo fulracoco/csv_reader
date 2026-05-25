@@ -1,15 +1,17 @@
 # CSV Reader
 
-A cross-platform desktop application for reading and exporting large CSV files. Built with Tauri + Rust.
+A cross-platform desktop application for reading, searching, and exporting large CSV files. Built with Tauri + Rust.
 
-Handles files of any size (tested with 300MB+) by using memory-mapped byte-offset indexing in Rust — the entire file is never loaded into memory.
+Handles files of any size (tested with 2GB+/10M rows) by using memory-mapped byte-offset indexing and parallel search in Rust — the entire file is never loaded into memory.
 
-![screenshot](screenshot.png)
+![Main interface](screenshot-main.png)
 
 ## Features
 
 - **File-backed indexing** — scans the file once to build a byte-offset index, then reads only visible rows on demand
 - **Virtual scrolling** — renders only rows in the viewport, smooth even with millions of rows
+- **Parallel search** — multi-threaded search via rayon with SIMD-accelerated byte scanning (memchr), 0 memory when idle
+  ![Search](screenshot-search.png)
 - **Large cell support** — cells containing several MB of text are handled efficiently: preview in table, full content in detail panel on click
 - **Uniform column widths** — all columns have equal width with a 120px minimum; horizontal scrollbar appears when needed
 - **Row/column selection** — click row numbers or column headers to select (Shift for range, Ctrl to toggle)
@@ -37,6 +39,8 @@ npm run dev
 |---|---|
 | Open file | Click **Open CSV File** or the folder icon, or `Ctrl+O` |
 | Scroll | Mouse wheel / drag scrollbar (virtual scrolling, only visible rows loaded) |
+| Search | Click search box or `Ctrl+F`, type query, choose column filter, press **Enter** |
+| Navigate to result | Click a search result item to jump to that row |
 | View cell content | Click any cell to open the detail panel on the right |
 | Copy cell | Select cell, press `Ctrl+C`, or click **Copy** in the detail panel |
 | Adjust row height | Use the dropdown in the toolbar (28px–100px) |
@@ -48,29 +52,34 @@ npm run dev
 
 | File | Purpose |
 |---|---|
-| `src-tauri/src/csv_engine.rs` | Rust CSV engine: memory-mapped I/O, byte-offset indexing, LRU cache, parsing |
+| `src-tauri/src/csv_engine.rs` | Rust CSV engine: memory-mapped I/O, byte-offset indexing, parallel search, LRU cache, parsing |
 | `src-tauri/src/commands.rs` | Tauri IPC command handlers + i18n menu builder |
 | `src-tauri/src/lib.rs` | Tauri app setup, plugin registration, menu event handling |
 | `src-tauri/src/main.rs` | Entry point |
-| `index.html` | UI layout: welcome screen, toolbar, virtual table, detail panel, export modal |
-| `styles.css` | Dark theme, table styling, modal, scrollbar customization |
-| `renderer.js` | Virtual scrolling engine, DOM pool recycling, cell interaction, export dialog |
+| `frontend/index.html` | UI layout: welcome screen, toolbar, search bar, virtual table, detail panel, export modal |
+| `frontend/styles.css` | Dark theme, table styling, search results panel, modal, scrollbar customization |
+| `frontend/renderer.js` | Virtual scrolling engine, DOM pool recycling, cell interaction, search UI, export dialog |
 
 ### How It Handles Large Files
 
 1. **Memory-mapped I/O** — the file is mapped into virtual memory (not read into RAM), so the OS handles paging transparently.
-2. **One-pass indexing** — scans the file byte-by-byte in Rust, records row start positions. For 200K rows this takes ~100ms and uses ~1.5MB of memory.
+2. **One-pass indexing** — scans the file byte-by-byte in Rust, records row start positions. For 10M rows this takes a few seconds and uses ~80MB of memory.
 3. **On-demand reading** — only rows visible in the viewport are read from the mmap (~30 rows).
 4. **LRU cache** — 500 most recently accessed rows kept in memory.
 5. **Truncated IPC** — only the first 500 characters of each cell are sent to the renderer. For a file with ~800KB cells, this reduces IPC transfer from 24MB to 30KB per viewport (99.9% reduction). Full content is loaded on demand when a cell is clicked.
 6. **Streaming export** — writes directly to the output file row by row, never holds the full dataset in memory.
+7. **Parallel search** — rayon parallel iterator over mmap rows, SIMD byte-level fast path for ASCII/UTF-8, AtomicBool cancel signal caps results at 500.
 
 ## Keyboard Shortcuts
 
 | Key | Action |
 |---|---|
-| `Escape` | Close detail panel / clear selection |
+| `Ctrl+O` | Open file |
+| `Ctrl+F` | Focus search box |
+| `Enter` | Execute search |
+| `Escape` | Close detail panel / close search results / clear selection |
 | `Ctrl+C` | Copy selected cell content |
+| `F11` | Toggle fullscreen |
 
 ## License
 
