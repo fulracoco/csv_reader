@@ -26,7 +26,7 @@ jobs:
             artifact-path-appimage: src-tauri/target/release/bundle/appimage/*.AppImage
 
           # ── Linux ARM64 ────────────────────────────────────────────
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-24.04-arm 
             target: linux
             rust-target: aarch64-unknown-linux-gnu
             artifact-name: csv-reader-linux-arm64
@@ -68,7 +68,6 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
-      # ── Linux system dependencies ──────────────────────────────────
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -96,14 +95,11 @@ jobs:
         shell: bash
         run: |
           npx tauri build --target ${{ matrix.rust-target }} --bundles deb,appimage,dmg,msi 2>&1 || true
-          # Tauri build may return non-zero for some bundle types on certain platforms;
-          # check that at least one bundle was produced
           if [ -d "src-tauri/target/release/bundle" ]; then
             echo "Build completed, checking bundles..."
             find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
           fi
 
-      # ── Upload artifacts ───────────────────────────────────────────
       - name: Upload artifact (primary)
         uses: actions/upload-artifact@v5
         if: matrix.artifact-path != ''
@@ -134,7 +130,13 @@ jobs:
           path: dist
 
       - name: List downloaded artifacts
-        run: find dist -type f
+        run: |
+          if [ -d "dist" ]; then
+            find dist -type f
+          else
+            echo "Warning: dist directory not found - no artifacts were downloaded"
+            exit 1
+          fi
 
       - name: Flatten artifacts
         shell: bash
