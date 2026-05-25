@@ -1,14 +1,15 @@
 {
   "name": "csv-reader",
   "version": "0.0.8",
-  "description": "High-performance CSV file reader for large files",
+  "description": "CSV file reader",
   "author": "fulracoco",
   "license": "MIT",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "build:win": "tauri build --target x86_64-pc-windows-msvc",
-    "build:mac": "tauri build --target aarch64-apple-darwin",
+    "build:mac-x64": "tauri build --target x86_64-apple-darwin",
+    "build:mac-arm64": "tauri build --target aarch64-apple-darwin",
     "build:linux": "tauri build --target x86_64-unknown-linux-gnu"
   },
   "devDependencies": {
