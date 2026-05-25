@@ -1,7 +1,7 @@
-use crate::csv_engine::{CsvEngine, OpenResult, RowData};
+use crate::csv_engine::{CsvEngine, OpenResult, RowData, SearchProgress, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Emitter, State};
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri_plugin_dialog::DialogExt;
 
@@ -130,6 +130,26 @@ pub fn export_csv(
         }
         None => Ok(serde_json::json!({"canceled": true})),
     }
+}
+
+#[tauri::command]
+pub fn search_csv(
+    app: tauri::AppHandle,
+    engine: State<'_, Mutex<CsvEngine>>,
+    query: String,
+    col_filter: Option<u32>,
+    case_sensitive: Option<bool>,
+) -> Result<Vec<SearchResult>, String> {
+    let case_sensitive = case_sensitive.unwrap_or(false);
+    let app_handle = app.clone();
+    engine.lock().unwrap().search_with_progress(
+        &query,
+        col_filter,
+        case_sensitive,
+        move |done, total| {
+            let _ = app_handle.emit("search-progress", SearchProgress { done, total });
+        },
+    )
 }
 
 #[tauri::command]

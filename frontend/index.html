@@ -44,6 +44,30 @@
           </svg>
           Export
         </button>
+        <!-- Search -->
+        <div class="search-container">
+          <div class="search-input-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="search-input" class="search-input" placeholder="Search..." />
+            <button id="btn-search-clear" class="search-clear-btn" title="Clear">&times;</button>
+          </div>
+          <select id="search-column" class="search-select">
+            <option value="">All Columns</option>
+          </select>
+          <label class="search-case-label" title="Case sensitive">
+            <input type="checkbox" id="search-case-sensitive" /> Aa
+          </label>
+          <div id="search-results-panel" class="search-results-panel hidden">
+            <div class="search-results-header">
+              <span id="search-results-status"></span>
+              <button id="btn-search-close" class="search-close-btn" title="Close">&times;</button>
+            </div>
+            <div id="search-results-list" class="search-results-list"></div>
+          </div>
+        </div>
         <div class="toolbar-spacer"></div>
         <label class="row-height-label" title="Row height in pixels">
           Row:

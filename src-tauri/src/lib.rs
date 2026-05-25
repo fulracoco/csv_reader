@@ -49,6 +49,7 @@ pub fn run() {
             commands::get_cell_content,
             commands::update_cell,
             commands::export_csv,
+            commands::search_csv,
             commands::set_language,
         ])
         .run(tauri::generate_context!())

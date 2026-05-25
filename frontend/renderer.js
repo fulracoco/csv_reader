@@ -23,8 +23,11 @@ const api = {
   updateCell: (row, col, content) => invoke('update_cell', { row, col, content }),
   exportCSV: (colIndices, startRow, endRow) =>
     invoke('export_csv', { colIndices, startRow, endRow }),
+  search: (query, colFilter, caseSensitive) =>
+    invoke('search_csv', { query, colFilter, caseSensitive }),
   onProgress: (callback) => listen('index-progress', (e) => callback(e.payload ?? e)),
   onExportProgress: (callback) => listen('export-progress', (e) => callback(e.payload ?? e)),
+  onSearchProgress: (callback) => listen('search-progress', (e) => callback(e.payload ?? e)),
   onMenuOpenFile: (callback) => listen('menu-open-file', callback),
 };
 
@@ -51,6 +54,14 @@ const exportRowFrom = document.getElementById('export-row-from');
 const exportRowTo = document.getElementById('export-row-to');
 const exportRowTotal = document.getElementById('export-row-total');
 const exportStatus = document.getElementById('export-status');
+const searchInput = document.getElementById('search-input');
+const searchColumn = document.getElementById('search-column');
+const searchCaseSensitive = document.getElementById('search-case-sensitive');
+const searchClearBtn = document.getElementById('btn-search-clear');
+const searchResultsPanel = document.getElementById('search-results-panel');
+const searchResultsStatus = document.getElementById('search-results-status');
+const searchResultsList = document.getElementById('search-results-list');
+const searchCloseBtn = document.getElementById('btn-search-close');
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -73,6 +84,8 @@ let isScrolling = false;
 
 let selectedRows = new Set();
 let selectedCols = new Set();
+let searchDebounceTimer = null;
+let searchInProgress = false;
 let lastClickedRow = -1;
 let lastClickedCol = -1;
 
@@ -115,6 +128,13 @@ api.onMenuOpenFile(() => {
   openFile();
 });
 
+api.onSearchProgress((payload) => {
+  if (searchInProgress && payload && payload.total > 0) {
+    const pct = Math.round((payload.done / payload.total) * 100);
+    searchResultsStatus.textContent = 'Searching... ' + pct + '%';
+  }
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (isEditing) {
@@ -123,6 +143,11 @@ document.addEventListener('keydown', (e) => {
       closeDetail();
       clearSelection();
     }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
     if (selectedCell && !detailPanel.classList.contains('hidden')) {
@@ -135,6 +160,60 @@ document.addEventListener('keydown', (e) => {
 
 detailPanel.addEventListener('click', (e) => {
   if (e.target === detailPanel) closeDetail();
+});
+
+// ─── Search Events ────────────────────────────────────────────────────────
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounceTimer);
+  const query = searchInput.value.trim();
+  if (query.length === 0) {
+    hideSearchResults();
+    return;
+  }
+  if (query.length < 2) return;
+  searchDebounceTimer = setTimeout(() => performSearch(), 300);
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    hideSearchResults();
+    searchInput.blur();
+  }
+  if (e.key === 'Enter') {
+    clearTimeout(searchDebounceTimer);
+    performSearch();
+  }
+});
+
+searchColumn.addEventListener('change', () => {
+  if (searchInput.value.trim().length >= 2) {
+    clearTimeout(searchDebounceTimer);
+    performSearch();
+  }
+});
+
+searchCaseSensitive.addEventListener('change', () => {
+  if (searchInput.value.trim().length >= 2) {
+    clearTimeout(searchDebounceTimer);
+    performSearch();
+  }
+});
+
+searchClearBtn.addEventListener('click', () => {
+  searchInput.value = '';
+  hideSearchResults();
+  searchInput.focus();
+});
+
+searchCloseBtn.addEventListener('click', hideSearchResults);
+
+document.addEventListener('click', (e) => {
+  if (!searchResultsPanel.classList.contains('hidden') &&
+      !e.target.closest('.search-container') &&
+      !e.target.closest('.search-results-panel')) {
+    hideSearchResults();
+  }
 });
 
 // ─── Row/Column Selection ──────────────────────────────────────────────────
@@ -257,6 +336,7 @@ async function openFile() {
 
   calcColumnWidth();
   buildHeader();
+  populateSearchColumns();
   setupVirtualScroll();
   scrollContainer.scrollTop = 0;
   requestAnimationFrame(() => scheduleRender());
@@ -765,4 +845,95 @@ function showToast(message) {
   toastTimer = setTimeout(() => {
     toast.classList.remove('show');
   }, 1800);
+}
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+function populateSearchColumns() {
+  searchColumn.innerHTML = '<option value="">All Columns</option>';
+  for (let i = 0; i < fileInfo.headers.length; i++) {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = fileInfo.headers[i] || '(col ' + (i + 1) + ')';
+    searchColumn.appendChild(opt);
+  }
+}
+
+async function performSearch() {
+  const query = searchInput.value.trim();
+  if (query.length < 2) return;
+  if (!fileInfo) return;
+
+  searchInProgress = true;
+  searchResultsStatus.textContent = 'Searching...';
+
+  const colFilter = searchColumn.value !== '' ? parseInt(searchColumn.value) : null;
+  const caseSensitive = searchCaseSensitive.checked;
+
+  try {
+    const results = await api.search(query, colFilter, caseSensitive);
+    renderSearchResults(results, query);
+  } catch (err) {
+    console.error('Search failed:', err);
+    searchResultsStatus.textContent = 'Search error: ' + err;
+  } finally {
+    searchInProgress = false;
+  }
+}
+
+function renderSearchResults(results, query) {
+  if (results.length === 0) {
+    searchResultsList.innerHTML = '<div class="search-no-results">No results for "' + escapeHtml(query) + '"</div>';
+  } else {
+    const maxDisplay = 200;
+    const displayResults = results.slice(0, maxDisplay);
+    let html = '';
+    for (const result of displayResults) {
+      html += '<div class="search-result-item" data-row="' + result.row_index + '">';
+      html += '<div class="search-result-row">Row ' + (result.row_index + 1).toLocaleString() + '</div>';
+      html += '<div class="search-result-matches">';
+      for (const m of result.matches) {
+        html += '<div class="search-result-match">';
+        html += '<span class="col-name">' + escapeHtml(m.col_name) + ':</span> ';
+        html += '<span>' + escapeHtml(m.cell_text) + '</span>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+    if (results.length > maxDisplay) {
+      html += '<div class="search-no-results">Showing first ' + maxDisplay + ' of ' + results.length.toLocaleString() + ' results</div>';
+    }
+    searchResultsList.innerHTML = html;
+  }
+
+  searchResultsStatus.textContent = results.length.toLocaleString() + ' result' +
+    (results.length !== 1 ? 's' : '');
+
+  searchResultsList.querySelectorAll('.search-result-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const rowIndex = parseInt(item.dataset.row);
+      if (!isNaN(rowIndex)) {
+        navigateToRow(rowIndex);
+      }
+    });
+  });
+
+  searchResultsPanel.classList.remove('hidden');
+}
+
+function hideSearchResults() {
+  searchResultsPanel.classList.add('hidden');
+}
+
+function navigateToRow(rowIndex) {
+  if (!fileInfo) return;
+  const targetScrollTop = rowIndex * rowHeight;
+  scrollContainer.scrollTop = targetScrollTop;
+  hideSearchResults();
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }

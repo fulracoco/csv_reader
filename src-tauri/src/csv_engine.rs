@@ -1,9 +1,12 @@
 use memmap2::Mmap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 const MAX_CELL_PREVIEW: usize = 500;
 const CACHE_MAX: usize = 500;
@@ -26,10 +29,29 @@ pub struct RowData {
     pub lengths: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub row_index: u32,
+    pub matches: Vec<CellMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CellMatch {
+    pub col_index: u32,
+    pub col_name: String,
+    pub cell_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchProgress {
+    pub done: u32,
+    pub total: u32,
+}
+
 // ─── CsvEngine ───────────────────────────────────────────────────────────────
 
 pub struct CsvEngine {
-    mmap: Option<Mmap>,
+    mmap: Option<Arc<Mmap>>,
     file_path: String,
     file_size: u64,
     offsets: Vec<u64>,
@@ -73,7 +95,7 @@ impl CsvEngine {
         let offsets = build_index(&mmap, bom_offset, &encoding);
 
         if offsets.is_empty() {
-            self.mmap = Some(mmap);
+            self.mmap = Some(Arc::new(mmap));
             self.file_path = file_path.to_string();
             self.file_size = file_size;
             self.offsets = Vec::new();
@@ -101,7 +123,7 @@ impl CsvEngine {
         let row_count = offsets.len().saturating_sub(1) as u32;
         let column_count = headers.len() as u32;
 
-        self.mmap = Some(mmap);
+        self.mmap = Some(Arc::new(mmap));
         self.file_path = file_path.to_string();
         self.file_size = file_size;
         self.offsets = offsets;
@@ -130,7 +152,7 @@ impl CsvEngine {
         let mut cache_updates: Vec<(u32, Option<Vec<String>>)> = Vec::with_capacity(count as usize);
 
         {
-            let mmap = self.mmap.as_ref().ok_or("No file open".to_string())?;
+            let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
 
             for i in 0..count {
                 let row_idx = start_row + i + 1;
@@ -191,7 +213,7 @@ impl CsvEngine {
         let mut cache_updates: Vec<(u32, Option<Vec<String>>)> = Vec::new();
 
         {
-            let mmap = self.mmap.as_ref().ok_or("No file open".to_string())?;
+            let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
 
             for &(orig_idx, data_row) in &sorted {
                 let offset_idx = data_row + 1;
@@ -229,7 +251,7 @@ impl CsvEngine {
 
     pub fn get_cell_content(&mut self, row_index: u32, col_index: u32) -> Result<String, String> {
         let delimiter = self.delimiter as char;
-        let mmap = self.mmap.as_ref().ok_or("No file open".to_string())?;
+        let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
 
         let data_row = row_index + 1;
         if data_row as usize >= self.offsets.len() {
@@ -263,7 +285,7 @@ impl CsvEngine {
         let row_count = self.offsets.len().saturating_sub(1);
 
         let mut lines: Vec<String> = {
-            let mmap = self.mmap.as_ref().ok_or("No file open".to_string())?;
+            let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
             let mut lines = Vec::with_capacity(row_count + 1);
             for i in 0..=row_count {
                 let text = read_row_text(mmap, &self.offsets, i, self.file_size, &self.encoding);
@@ -331,7 +353,7 @@ impl CsvEngine {
         end_row: u32,
     ) -> Result<(), String> {
         let delimiter = self.delimiter as char;
-        let mmap = self.mmap.as_ref().ok_or("No file open".to_string())?;
+        let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
 
         let mut file = BufWriter::new(
             File::create(output_path)
@@ -416,6 +438,146 @@ impl CsvEngine {
     pub fn column_count(&self) -> u32 {
         self.headers.len() as u32
     }
+
+    pub fn search_with_progress(
+        &self,
+        query: &str,
+        col_filter: Option<u32>,
+        case_sensitive: bool,
+        on_progress: impl Fn(u32, u32) + Send + Sync,
+    ) -> Result<Vec<SearchResult>, String> {
+        let mmap = Arc::clone(self.mmap.as_ref().ok_or("No file open")?);
+        let offsets = self.offsets.clone();
+        let encoding = self.encoding.clone();
+        let delimiter = self.delimiter;
+        let file_size = self.file_size;
+        let headers = self.headers.clone();
+
+        if offsets.len() <= 1 || query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let total = (offsets.len() - 1) as u32;
+        let query_owned = query.to_string();
+
+        let is_utf8 = encoding == "utf8";
+        let query_is_ascii = query.chars().all(|c| c.is_ascii());
+        let can_use_raw = is_utf8 && case_sensitive && query_is_ascii;
+        let query_bytes = if can_use_raw {
+            Some(query.as_bytes().to_vec())
+        } else {
+            None
+        };
+
+        let counter = AtomicU32::new(0);
+
+        let results: Vec<SearchResult> = (1..offsets.len())
+            .into_par_iter()
+            .filter_map(|i| {
+                let start = offsets[i] as usize;
+                let end = if i + 1 < offsets.len() {
+                    offsets[i + 1] as usize
+                } else {
+                    file_size as usize
+                };
+                if end <= start || start >= mmap.len() {
+                    return None;
+                }
+                let row_bytes = &mmap[start..end.min(mmap.len())];
+
+                let row_contains = if let Some(ref qb) = query_bytes {
+                    row_bytes
+                        .windows(qb.len())
+                        .any(|w| w == qb.as_slice())
+                } else if is_utf8 {
+                    let row_text = String::from_utf8_lossy(row_bytes);
+                    if case_sensitive {
+                        row_text.contains(&query_owned)
+                    } else {
+                        row_text.to_lowercase().contains(&query_owned.to_lowercase())
+                    }
+                } else {
+                    let row_text = read_row_text(&mmap, &offsets, i, file_size, &encoding);
+                    if row_text.is_empty() {
+                        return None;
+                    }
+                    if case_sensitive {
+                        row_text.contains(&query_owned)
+                    } else {
+                        row_text.to_lowercase().contains(&query_owned.to_lowercase())
+                    }
+                };
+
+                if !row_contains {
+                    return None;
+                }
+
+                // Row matched — decode and find matching cells
+                let row_text = read_row_text(&mmap, &offsets, i, file_size, &encoding);
+                let cells = parse_csv_line(&row_text, delimiter as char);
+
+                let matches: Vec<CellMatch> = if let Some(ci) = col_filter {
+                    let ci = ci as usize;
+                    if let Some(cell_text) = cells.get(ci) {
+                        let found = if case_sensitive {
+                            cell_text.contains(&query_owned)
+                        } else {
+                            cell_text.to_lowercase().contains(&query_owned.to_lowercase())
+                        };
+                        if found {
+                            vec![CellMatch {
+                                col_index: ci as u32,
+                                col_name: headers.get(ci).cloned().unwrap_or_default(),
+                                cell_text: extract_match_context(cell_text, &query_owned, case_sensitive),
+                            }]
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    cells
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(ci, cell_text)| {
+                            let found = if case_sensitive {
+                                cell_text.contains(&query_owned)
+                            } else {
+                                cell_text.to_lowercase().contains(&query_owned.to_lowercase())
+                            };
+                            if found {
+                                Some(CellMatch {
+                                    col_index: ci as u32,
+                                    col_name: headers.get(ci).cloned().unwrap_or_default(),
+                                    cell_text: extract_match_context(cell_text, &query_owned, case_sensitive),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                };
+
+                if matches.is_empty() {
+                    return None;
+                }
+
+                let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if done % 4096 == 0 || done == total {
+                    on_progress(done, total);
+                }
+
+                Some(SearchResult {
+                    row_index: (i - 1) as u32,
+                    matches,
+                })
+            })
+            .collect();
+
+        on_progress(total, total);
+        Ok(results)
+    }
 }
 
 // ─── Cache helpers ───────────────────────────────────────────────────────────
@@ -456,7 +618,7 @@ impl CsvEngine {
 
         self.file_size = mmap.len() as u64;
         self.offsets = build_index(&mmap, self.bom_offset, &self.encoding);
-        self.mmap = Some(mmap);
+        self.mmap = Some(Arc::new(mmap));
 
         Ok(())
     }
@@ -476,6 +638,43 @@ fn truncate_cell(text: &str, max_len: usize) -> String {
     } else {
         text.to_string()
     }
+}
+
+fn extract_match_context(cell_text: &str, query: &str, case_sensitive: bool) -> String {
+    let match_pos = if case_sensitive {
+        cell_text.find(query)
+    } else {
+        let lower = cell_text.to_lowercase();
+        let ql = query.to_lowercase();
+        lower.find(&ql)
+    };
+
+    let mpos = match match_pos {
+        Some(pos) => pos,
+        None => return truncate_cell(cell_text, 200),
+    };
+
+    let qlen = query.len();
+    let radius = 90usize;
+    let cell_len = cell_text.len();
+
+    let preview_start = mpos.saturating_sub(radius);
+    let preview_end = (mpos + qlen + radius).min(cell_len);
+
+    let mut preview = cell_text[preview_start..preview_end].to_string();
+
+    if preview_start > 0 {
+        preview.insert_str(0, "...");
+    }
+    if preview_end < cell_len {
+        preview.push_str("...");
+    }
+
+    if preview.len() > 250 {
+        preview = truncate_cell(&preview, 250);
+    }
+
+    preview
 }
 
 fn detect_bom(data: &[u8]) -> (String, u64) {
