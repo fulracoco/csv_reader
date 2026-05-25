@@ -193,7 +193,11 @@ pub fn build_menu(
         .build()?;
 
     let view_submenu = SubmenuBuilder::new(app, t("View", "视图"))
-        .item(&PredefinedMenuItem::fullscreen(app, None)?)
+        .item(
+            &MenuItemBuilder::with_id("menu_fullscreen", t("Toggle Fullscreen", "切换全屏"))
+                .accelerator("F11")
+                .build(app)?,
+        )
         .build()?;
 
     let help_submenu = SubmenuBuilder::new(app, t("Help", "帮助"))

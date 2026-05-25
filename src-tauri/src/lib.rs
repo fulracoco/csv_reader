@@ -35,6 +35,12 @@ pub fn run() {
                     "lang_zh" => {
                         let _ = set_language_inner(app_handle, "zh");
                     }
+                    "menu_fullscreen" => {
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let is_fs = window.is_fullscreen().unwrap_or(false);
+                            let _ = window.set_fullscreen(!is_fs);
+                        }
+                    }
                     _ => {}
                 }
             });
