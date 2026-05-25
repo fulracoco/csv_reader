@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches: [main,rust]
     tags:
       - 'v*'
   pull_request:
@@ -118,14 +118,19 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact-name }}
-          path: src-tauri/target/release/bundle/**
+          path: |
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
           if-no-files-found: warn
 
       - name: Upload raw binary
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact-name }}-binary
-          path: src-tauri/target/release/${{ matrix.binary-name }}
+          path: src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }}
           if-no-files-found: error
 
   release:
