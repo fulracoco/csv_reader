@@ -1,0 +1,26 @@
+[package]
+name = "csv-reader"
+version = "0.0.6"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "csv_reader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+memmap2 = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

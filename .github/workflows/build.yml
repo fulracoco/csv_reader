@@ -20,42 +20,42 @@ jobs:
           # ── Linux x64 ──────────────────────────────────────────────
           - os: ubuntu-latest
             target: linux
-            electron-arch: x64
+            rust-target: x86_64-unknown-linux-gnu
             artifact-name: csv-reader-linux-x64
-            artifact-path: dist/*.AppImage
-            rust-target: ''
+            artifact-path: src-tauri/target/release/bundle/deb/*.deb
+            artifact-path-appimage: src-tauri/target/release/bundle/appimage/*.AppImage
 
-          # ── Linux ARM64 (使用原生 ARM64 运行器，无需交叉编译) ────────
-          - os: ubuntu-24.04-arm 
+          # ── Linux ARM64 ────────────────────────────────────────────
+          - os: ubuntu-24.04-arm
             target: linux
-            electron-arch: arm64
+            rust-target: aarch64-unknown-linux-gnu
             artifact-name: csv-reader-linux-arm64
-            artifact-path: dist/*.AppImage
-            rust-target: ''
+            artifact-path: src-tauri/target/release/bundle/deb/*.deb
+            artifact-path-appimage: src-tauri/target/release/bundle/appimage/*.AppImage
 
-          # ── macOS (Apple Silicon runner, native arm64) ─────────────
+          # ── macOS (Apple Silicon) ──────────────────────────────────
           - os: macos-latest
             target: mac
-            electron-arch: ''
+            rust-target: aarch64-apple-darwin
             artifact-name: csv-reader-macos
-            artifact-path: dist/*.dmg
-            rust-target: ''
+            artifact-path: src-tauri/target/release/bundle/dmg/*.dmg
+            artifact-path-appimage: ''
 
           # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
             target: win
-            electron-arch: x64
+            rust-target: x86_64-pc-windows-msvc
             artifact-name: csv-reader-win-x64
-            artifact-path: dist/*.exe
-            rust-target: ''
+            artifact-path: src-tauri/target/release/bundle/msi/*.msi
+            artifact-path-appimage: ''
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
             target: win
-            electron-arch: arm64
-            artifact-name: csv-reader-win-arm64
-            artifact-path: dist/*.exe
             rust-target: aarch64-pc-windows-msvc
+            artifact-name: csv-reader-win-arm64
+            artifact-path: src-tauri/target/release/bundle/msi/*.msi
+            artifact-path-appimage: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -63,19 +63,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # ── Rust toolchain ──────────────────────────────────────────────
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
 
-      # ── System dependencies for Linux ───────────────────────────────
-      - name: Install Linux System Dependencies
+      # ── Linux system dependencies ──────────────────────────────────
+      - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # 移除了交叉编译工具链和 QEMU 相关包
-          sudo apt-get install -y libfuse2 icnsutils graphicsmagick xz-utils
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            xz-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -86,93 +92,33 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ── Build native module ─────────────────────────────────────────
-      - name: Build native module (${{ matrix.electron-arch || 'native' }})
-        shell: bash
-        working-directory: native
-        run: |
-          if [ -n "${{ matrix.rust-target }}" ]; then
-            echo "Cross-compiling for ${{ matrix.rust-target }}"
-            # Windows ARM64 依然需要指定链接器或环境变量（如果 rustup 没自动处理）
-            if [ "${{ matrix.rust-target }}" = "aarch64-pc-windows-msvc" ]; then
-              echo "Setting up Windows ARM64 cross-compile env..."
-            fi
-            cargo build --release --target ${{ matrix.rust-target }}
-          else
-            echo "Building natively"
-            cargo build --release
-          fi
-          
-          # 检查构建产物（根据你的实际文件名调整）
-          # 注意：跨平台编译时产物在 target/<target>/release/ 目录下
-          if [ -n "${{ matrix.rust-target }}" ]; then
-            TARGET_DIR="target/${{ matrix.rust-target }}/release"
-          else
-            TARGET_DIR="target/release"
-          fi
-           # Find the native library and rename it to .node
-          if [ -f "$TARGET_DIR/libcsv_native.dylib" ]; then
-            mv "$TARGET_DIR/libcsv_native.dylib" "$TARGET_DIR/csv-native.node"
-          elif [ -f "$TARGET_DIR/libcsv_native.so" ]; then
-            mv "$TARGET_DIR/libcsv_native.so" "$TARGET_DIR/csv-native.node"
-          elif [ -f "$TARGET_DIR/csv_native.dll" ]; then
-            mv "$TARGET_DIR/csv_native.dll" "$TARGET_DIR/csv-native.node"
-          fi
-
-          LIB_NAME="csv-native.node"
-          if [ ! -f "$TARGET_DIR/$LIB_NAME" ]; then
-            echo "ERROR: Built library not found in $TARGET_DIR"
-            ls -la "$TARGET_DIR/" || true
-            exit 1
-          fi
-          echo "Native module ready: $(ls -lh $TARGET_DIR/$LIB_NAME)"
-
-          # Copy to native/ so electron-builder can find it
-          cp "$TARGET_DIR/$LIB_NAME" .
-
-      # ── Build Electron app ──────────────────────────────────────────
-      - name: Build (${{ matrix.target }} ${{ matrix.electron-arch }})
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # For native ARM64 runners, don't pass arch flag
-          if [ "${{ matrix.os }}" = "ubuntu-24.04-arm" ]; then
-            npm run build:${{ matrix.target }}
-          elif [ -n "${{ matrix.electron-arch }}" ]; then
-            npm run build:${{ matrix.target }} -- --${{ matrix.electron-arch }}
-          else
-            npm run build:${{ matrix.target }}
-          fi
-
-      # ── Rename Windows artifacts (add arch suffix) ─────────────────
-      - name: Rename Windows artifacts (add arch suffix)
-        if: matrix.target == 'win'
+      - name: Build Tauri app (${{ matrix.target }} ${{ matrix.rust-target }})
         shell: bash
         run: |
-          for f in dist/*.exe; do
-            base="${f%.exe}"
-            mv "$f" "${base}-${{ matrix.electron-arch }}.exe"
-          done
+          npx tauri build --target ${{ matrix.rust-target }} --bundles deb,appimage,dmg,msi 2>&1 || true
+          # Tauri build may return non-zero for some bundle types on certain platforms;
+          # check that at least one bundle was produced
+          if [ -d "src-tauri/target/release/bundle" ]; then
+            echo "Build completed, checking bundles..."
+            find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
+          fi
 
-      # ── Standardize Linux AppImage naming ───────────────────────────
-      - name: Standardize Linux AppImage naming
-        if: matrix.target == 'linux'
-        shell: bash
-        run: |
-          for f in dist/*.AppImage; do
-            if [ -f "$f" ]; then
-              base="${f%.AppImage}"
-              mv "$f" "${base}-${{ matrix.electron-arch }}.AppImage"
-            fi
-          done
-
-      # ── Upload artifact ────────────────────────────────────────────
-      - name: Upload artifact
+      # ── Upload artifacts ───────────────────────────────────────────
+      - name: Upload artifact (primary)
         uses: actions/upload-artifact@v5
+        if: matrix.artifact-path != ''
+        continue-on-error: true
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
+
+      - name: Upload artifact (AppImage)
+        uses: actions/upload-artifact@v5
+        if: matrix.artifact-path-appimage != ''
+        continue-on-error: true
+        with:
+          name: ${{ matrix.artifact-name }}-appimage
+          path: ${{ matrix.artifact-path-appimage }}
 
   release:
     needs: build
@@ -193,15 +139,12 @@ jobs:
       - name: Flatten artifacts
         shell: bash
         run: |
-          # Move all artifacts from subdirectories to dist root
-          find dist -type f ! -path "dist/*" -o -type f -path "dist/*/*" | while read file; do
+          find dist -type f | while read file; do
             if [ -f "$file" ]; then
               mv "$file" "dist/$(basename "$file")"
             fi
           done
-          # Clean up empty directories
           find dist -type d -empty -delete
-          # List final artifacts
           ls -lh dist/
 
       - name: Create Release

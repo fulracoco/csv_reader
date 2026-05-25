@@ -3,79 +3,18 @@
   "version": "0.0.6",
   "description": "High-performance CSV file reader for large files",
   "author": "fulracoco",
-  "main": "main.js",
+  "license": "MIT",
   "scripts": {
-    "start": "electron .",
-    "generate-icon": "node scripts/generate-icon.js",
-    "build:win": "electron-builder --win portable",
-    "build:mac": "electron-builder --mac",
-    "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --win portable --mac --linux",
-    "prebuild:win": "npm run generate-icon",
-    "prebuild:mac": "npm run generate-icon",
-    "prebuild:linux": "npm run generate-icon",
-    "prebuild:all": "npm run generate-icon"
-  },
-  "build": {
-    "appId": "com.csvreader.app",
-    "productName": "CSV Reader",
-    "icon": "build/icon.png",
-    "directories": {
-      "output": "dist"
-    },
-    "asarUnpack": [
-      "native/csv-native.node",
-      "csv-worker.js"
-    ],
-    "files": [
-      "main.js",
-      "preload.js",
-      "csv-worker.js",
-      "index.html",
-      "styles.css",
-      "renderer.js",
-      "native/csv-native.node",
-      "native/package.json"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    }
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:win": "tauri build --target x86_64-pc-windows-msvc",
+    "build:mac": "tauri build --target aarch64-apple-darwin",
+    "build:linux": "tauri build --target x86_64-unknown-linux-gnu"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8",
-    "sharp": "^0.34.5"
+    "@tauri-apps/cli": "^2"
   },
   "dependencies": {
-    "@napi-rs/cli": "^3.6.2"
+    "@tauri-apps/api": "^2"
   }
 }

@@ -1,3 +1,21 @@
+// ─── Tauri API wrappers ─────────────────────────────────────────────────────
+
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const api = {
+  openFile: () => invoke('open_file'),
+  getRows: (start, count) => invoke('get_rows', { start, count }),
+  getRowsByIndex: (indices) => invoke('get_rows_by_index', { indices }),
+  getCellContent: (row, col) => invoke('get_cell_content', { row, col }),
+  updateCell: (row, col, content) => invoke('update_cell', { row, col, content }),
+  exportCSV: (colIndices, startRow, endRow) =>
+    invoke('export_csv', { colIndices, startRow, endRow }),
+  onProgress: (callback) => listen('index-progress', (e) => callback(e.payload)),
+  onExportProgress: (callback) => listen('export-progress', (e) => callback(e.payload)),
+  onMenuOpenFile: (callback) => listen('menu-open-file', callback),
+};
+
 // ─── DOM Elements ──────────────────────────────────────────────────────────
 
 const welcome = document.getElementById('welcome');
@@ -36,12 +54,11 @@ let visibleStart = 0;
 let visibleEnd = 0;
 let selectedCell = null;
 let isEditing = false;
-let editingCell = null;    // { row, col } of the cell being edited
+let editingCell = null;
 let originalContent = '';
 let scrollRAF = null;
 let isScrolling = false;
 
-// Selection state
 let selectedRows = new Set();
 let selectedCols = new Set();
 let lastClickedRow = -1;
@@ -82,8 +99,7 @@ window.addEventListener('resize', () => {
   }
 });
 
-// Menu bar "Open File" event
-window.csvAPI.onMenuOpenFile(() => {
+api.onMenuOpenFile(() => {
   openFile();
 });
 
@@ -189,7 +205,6 @@ function updateSelectionUI() {
   for (let j = 1; j < tableHeader.children.length; j++) {
     tableHeader.children[j].classList.toggle('selected', selectedCols.has(j - 1));
   }
-  // Update status text
   if (selectedRows.size > 0 || selectedCols.size > 0) {
     const parts = [];
     if (selectedRows.size > 0) parts.push(selectedRows.size + ' row' + (selectedRows.size > 1 ? 's' : ''));
@@ -210,12 +225,7 @@ async function openFile() {
   btn.textContent = 'Indexing...';
   btn.disabled = true;
 
-  const unsub = window.csvAPI.onProgress((progress) => {
-    btn.textContent = 'Indexing... ' + progress.percent + '%';
-  });
-
-  const info = await window.csvAPI.openFile();
-  unsub();
+  const info = await api.openFile();
 
   btn.textContent = origText;
   btn.disabled = false;
@@ -229,9 +239,9 @@ async function openFile() {
   mainView.classList.remove('hidden');
   closeDetail();
 
-  fileNameEl.textContent = info.fileName;
+  fileNameEl.textContent = info.file_name;
   fileStatsEl.textContent = formatFileInfo(info);
-  statusText.textContent = `Loaded ${info.rowCount.toLocaleString()} rows, ${info.columnCount} columns`;
+  statusText.textContent = `Loaded ${info.row_count.toLocaleString()} rows, ${info.column_count} columns`;
 
   calcColumnWidth();
   buildHeader();
@@ -242,9 +252,9 @@ async function openFile() {
 
 function formatFileInfo(info) {
   const parts = [];
-  parts.push(formatBytes(info.fileSize));
-  parts.push(info.rowCount.toLocaleString() + ' rows');
-  parts.push(info.columnCount + ' cols');
+  parts.push(formatBytes(info.file_size));
+  parts.push(info.row_count.toLocaleString() + ' rows');
+  parts.push(info.column_count + ' cols');
   return parts.join('  ·  ');
 }
 
@@ -274,36 +284,32 @@ function buildHeader() {
 
 function calcColumnWidth() {
   const containerWidth = scrollContainer.clientWidth || window.innerWidth - 32;
-  const avail = containerWidth - 64; // minus row number column
-  colWidth = Math.max(MIN_COL_WIDTH, Math.floor(avail / fileInfo.columnCount));
-  totalWidth = 64 + colWidth * fileInfo.columnCount;
+  const avail = containerWidth - 64;
+  colWidth = Math.max(MIN_COL_WIDTH, Math.floor(avail / fileInfo.column_count));
+  totalWidth = 64 + colWidth * fileInfo.column_count;
 }
 
 function setupVirtualScroll() {
   calcColumnWidth();
 
-  const totalHeight = fileInfo.rowCount * rowHeight;
+  const totalHeight = fileInfo.row_count * rowHeight;
   scrollInner.style.height = totalHeight + 'px';
   scrollInner.style.width = totalWidth + 'px';
 
   tableHeader.style.width = totalWidth + 'px';
 
-  // Reset visible range so next render always proceeds
   visibleStart = -1;
   visibleEnd = -1;
 
-  // Calculate how many rows fit in viewport
   const viewportHeight = scrollContainer.clientHeight;
   const visibleCount = Math.ceil(viewportHeight / rowHeight);
   const bufferedCount = visibleCount + 20;
 
-  // Recycle old elements
   for (const el of rowElements) {
     el.remove();
   }
   rowElements = [];
 
-  // Update existing pool elements' widths
   for (const row of elementPool) {
     row.style.width = totalWidth + 'px';
     for (let i = 1; i < row.children.length; i++) {
@@ -312,7 +318,6 @@ function setupVirtualScroll() {
     }
   }
 
-  // Create or reuse row elements
   while (elementPool.length < bufferedCount) {
     const row = document.createElement('div');
     row.className = 'table-row';
@@ -322,7 +327,7 @@ function setupVirtualScroll() {
     numCell.className = 'row-num';
     row.appendChild(numCell);
 
-    for (let i = 0; i < fileInfo.columnCount; i++) {
+    for (let i = 0; i < fileInfo.column_count; i++) {
       const cell = document.createElement('div');
       cell.className = 'table-cell';
       cell.style.width = colWidth + 'px';
@@ -335,7 +340,6 @@ function setupVirtualScroll() {
     elementPool.push(row);
   }
 
-  // Place elements in DOM
   for (let i = 0; i < bufferedCount; i++) {
     const row = elementPool[i];
     row.style.display = 'none';
@@ -393,12 +397,11 @@ async function renderVisibleRows(seq) {
   const viewportHeight = scrollContainer.clientHeight;
 
   const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 10);
-  const end = Math.min(fileInfo.rowCount, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 10);
+  const end = Math.min(fileInfo.row_count, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 10);
   const count = end - start;
 
   if (start === visibleStart && end === visibleEnd) return;
 
-  // Ensure we have enough elements
   while (rowElements.length < count) {
     const row = elementPool.length > rowElements.length
       ? elementPool[rowElements.length]
@@ -409,25 +412,21 @@ async function renderVisibleRows(seq) {
     rowElements.push(row);
   }
 
-  // Hide all rows first
   for (const row of rowElements) {
     row.style.display = 'none';
   }
 
-  // Request data
   let rows;
   try {
-    rows = await window.csvAPI.getRows(start, count);
+    rows = await api.getRows(start, count);
   } catch (err) {
     console.error('Failed to get rows:', err);
     statusText.textContent = 'Error loading rows';
     return;
   }
 
-  // Abort if a newer render has started
   if (seq !== renderSeq) return;
 
-  // Render visible rows
   for (let i = 0; i < count; i++) {
     const rowEl = rowElements[i];
     const rowIndex = start + i;
@@ -442,12 +441,10 @@ async function renderVisibleRows(seq) {
     rowEl.dataset.rowIndex = rowIndex;
     rowEl.classList.toggle('selected', selectedRows.has(rowIndex));
 
-    // Row number
     const numCell = rowEl.children[0];
     numCell.textContent = (rowIndex + 1).toLocaleString();
 
-    // Data cells
-    for (let j = 0; j < fileInfo.columnCount; j++) {
+    for (let j = 0; j < fileInfo.column_count; j++) {
       const cell = rowEl.children[j + 1];
       if (!cell) break;
       cell.style.width = colWidth + 'px';
@@ -468,8 +465,7 @@ async function renderVisibleRows(seq) {
       }
     }
 
-    // Clear unused cells
-    for (let j = fileInfo.columnCount + 1; j < rowEl.children.length; j++) {
+    for (let j = fileInfo.column_count + 1; j < rowEl.children.length; j++) {
       rowEl.children[j].textContent = '';
     }
   }
@@ -491,7 +487,7 @@ function createRowElement() {
   numCell.className = 'row-num';
   row.appendChild(numCell);
 
-  const colCount = fileInfo ? fileInfo.columnCount : 1;
+  const colCount = fileInfo ? fileInfo.column_count : 1;
   for (let i = 0; i < colCount; i++) {
     const cell = document.createElement('div');
     cell.className = 'table-cell';
@@ -512,12 +508,10 @@ function onCellClick(e, cell) {
   const colIndex = parseInt(cell.dataset.colIndex);
   if (isNaN(rowIndex) || isNaN(colIndex)) return;
 
-  // Save pending edit before switching cells
   if (isEditing && editingCell && (editingCell.row !== rowIndex || editingCell.col !== colIndex)) {
     saveEdit();
   }
 
-  // Clear multi-selection when clicking a single cell
   clearSelection();
 
   selectedCell = { row: rowIndex, col: colIndex };
@@ -532,11 +526,11 @@ async function openDetail(row, col) {
   detailPanel.classList.remove('hidden');
 
   try {
-    const content = await window.csvAPI.getCellContent(row, col);
+    const content = await api.getCellContent(row, col);
     detailContent.value = content;
     statusText.textContent = 'Cell [' + (row + 1) + ', ' + (col + 1) + '] — ' + formatBytes(content.length);
   } catch (err) {
-    detailContent.value = 'Error loading content: ' + err.message;
+    detailContent.value = 'Error loading content: ' + err;
   }
 }
 
@@ -605,25 +599,19 @@ async function saveEdit() {
 
   const { row, col } = editingCell;
   try {
-    const result = await window.csvAPI.updateCell(row, col, newContent);
-    if (result.error) {
-      showToast('Save failed: ' + result.error);
-      return;
-    }
+    await api.updateCell(row, col, newContent);
     showToast('Saved ' + formatBytes(newContent.length));
     statusText.textContent = 'Cell [' + (row + 1) + ', ' + (col + 1) + '] — ' + formatBytes(newContent.length);
     originalContent = newContent;
-    // Invalidate cache so re-render picks up changes
     visibleStart = -1;
     visibleEnd = -1;
     scheduleRender();
   } catch (err) {
-    showToast('Save failed: ' + err.message);
+    showToast('Save failed: ' + err);
   }
   exitEditMode();
 }
 
-// Inline editing for table cells (double-click)
 async function onCellDoubleClick(e, cell) {
   e.stopPropagation();
   const rowIndex = parseInt(cell.dataset.rowIndex);
@@ -632,7 +620,6 @@ async function onCellDoubleClick(e, cell) {
 
   if (isEditing) await saveEdit();
   openDetail(rowIndex, colIndex);
-  // Enter edit mode after detail loads
   setTimeout(() => enterEditMode(rowIndex, colIndex), 100);
 }
 
@@ -642,8 +629,8 @@ function openExportDialog() {
   if (!fileInfo) return;
 
   exportColumns.innerHTML = '';
-  const selCols = selectedCols.size > 0 ? selectedCols : new Set([...Array(fileInfo.columnCount).keys()]);
-  for (let i = 0; i < fileInfo.columnCount; i++) {
+  const selCols = selectedCols.size > 0 ? selectedCols : new Set([...Array(fileInfo.column_count).keys()]);
+  for (let i = 0; i < fileInfo.column_count; i++) {
     const label = document.createElement('label');
     label.className = 'export-col-checkbox' + (selCols.has(i) ? ' checked' : '');
     const cb = document.createElement('input');
@@ -655,24 +642,24 @@ function openExportDialog() {
     exportColumns.appendChild(label);
   }
 
-  exportRowFrom.max = fileInfo.rowCount;
-  exportRowTo.max = fileInfo.rowCount;
+  exportRowFrom.max = fileInfo.row_count;
+  exportRowTo.max = fileInfo.row_count;
   if (selectedRows.size > 0) {
     const sorted = [...selectedRows].sort((a, b) => a - b);
     exportRowFrom.value = sorted[0] + 1;
     exportRowTo.value = sorted[sorted.length - 1] + 1;
   } else {
     exportRowFrom.value = 1;
-    exportRowTo.value = fileInfo.rowCount;
+    exportRowTo.value = fileInfo.row_count;
   }
-  exportRowTotal.textContent = '(of ' + fileInfo.rowCount.toLocaleString() + ' rows)';
+  exportRowTotal.textContent = '(of ' + fileInfo.row_count.toLocaleString() + ' rows)';
   exportStatus.textContent = '';
 
   document.querySelectorAll('.btn-preset').forEach(btn => {
     btn.onclick = () => {
       if (btn.dataset.preset === 'all') {
         exportRowFrom.value = 1;
-        exportRowTo.value = fileInfo.rowCount;
+        exportRowTo.value = fileInfo.row_count;
       } else if (btn.dataset.preset === 'selected' && selectedRows.size > 0) {
         const sorted = [...selectedRows].sort((a, b) => a - b);
         exportRowFrom.value = sorted[0] + 1;
@@ -697,7 +684,7 @@ async function doExport() {
 
   const fromRow = parseInt(exportRowFrom.value) - 1;
   const toRow = parseInt(exportRowTo.value) - 1;
-  if (isNaN(fromRow) || isNaN(toRow) || fromRow < 0 || toRow >= fileInfo.rowCount || fromRow > toRow) {
+  if (isNaN(fromRow) || isNaN(toRow) || fromRow < 0 || toRow >= fileInfo.row_count || fromRow > toRow) {
     exportStatus.textContent = 'Invalid row range.'; return;
   }
 
@@ -705,17 +692,8 @@ async function doExport() {
   exportStatus.textContent = 'Exporting ' + totalRows.toLocaleString() + ' rows...';
   document.getElementById('btn-do-export').disabled = true;
 
-  const unsub = window.csvAPI.onExportProgress((p) => {
-    if (p.done) {
-      exportStatus.textContent = 'Done.';
-    } else {
-      const pct = Math.round((p.current / p.total) * 100);
-      exportStatus.textContent = 'Exporting... ' + pct + '%';
-    }
-  });
-
   try {
-    const result = await window.csvAPI.exportCSV(colIndices, fromRow, toRow);
+    const result = await api.exportCSV(colIndices, fromRow, toRow);
     if (result.canceled) {
       exportStatus.textContent = '';
     } else if (result.error) {
@@ -728,10 +706,7 @@ async function doExport() {
     exportStatus.textContent = 'Export failed';
   }
 
-  unsub();
   document.getElementById('btn-do-export').disabled = false;
-
-  // Clear selection after export
   clearSelection();
 }
 
@@ -753,7 +728,7 @@ async function copyCellContent() {
 async function copySelectedCell() {
   if (!selectedCell) return;
   try {
-    const content = await window.csvAPI.getCellContent(selectedCell.row, selectedCell.col);
+    const content = await api.getCellContent(selectedCell.row, selectedCell.col);
     await navigator.clipboard.writeText(content);
     showToast('Copied ' + formatBytes(content.length));
   } catch {

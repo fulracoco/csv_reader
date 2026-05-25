@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
   <title>CSV Reader</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -60,14 +59,12 @@
 
       <!-- Table area -->
       <div id="table-area" class="table-area">
-        <!-- Header row (wrapped for horizontal scroll sync) -->
         <div id="table-header-wrap" class="table-header-wrap">
           <div id="table-header" class="table-header">
             <div class="header-cell row-num">#</div>
           </div>
         </div>
 
-        <!-- Scrollable body -->
         <div id="scroll-container" class="scroll-container">
           <div id="scroll-inner" class="scroll-inner">
             <div id="rows-container" class="rows-container"></div>
