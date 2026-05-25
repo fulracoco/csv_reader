@@ -24,6 +24,7 @@ jobs:
             artifact-name: csv-reader-linux-x64
             bundles: deb,appimage
             binary-name: csv-reader
+            binary-ext: ""	
 
           # ── Linux ARM64 ────────────────────────────────────────────
           - os: ubuntu-24.04-arm
@@ -32,6 +33,7 @@ jobs:
             artifact-name: csv-reader-linux-arm64
             bundles: deb,appimage
             binary-name: csv-reader
+            binary-ext: ""	
 
           # ── macOS x64 (Intel) ──────────────────────────────────────
           - os: macos-latest
@@ -40,6 +42,7 @@ jobs:
             artifact-name: csv-reader-macos-x64
             bundles: dmg
             binary-name: csv-reader
+            binary-ext: ""			
 
           # ── macOS ARM64 (Apple Silicon) ────────────────────────────
           - os: macos-latest
@@ -48,6 +51,7 @@ jobs:
             artifact-name: csv-reader-macos-arm64
             bundles: dmg
             binary-name: csv-reader
+            binary-ext: ""	
 
           # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
@@ -56,6 +60,7 @@ jobs:
             artifact-name: csv-reader-win-x64
             bundles: msi,nsis
             binary-name: csv-reader
+            binary-ext: ".exe" # Windows 加上 .exe
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
@@ -64,6 +69,7 @@ jobs:
             artifact-name: csv-reader-win-arm64
             bundles: msi,nsis
             binary-name: csv-reader
+            binary-ext: ".exe" # Windows 加上 .exe
 
     runs-on: ${{ matrix.os }}
 
@@ -75,6 +81,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
+      # 引入 Rust 缓存，大幅加快二次构建速度
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -107,12 +118,14 @@ jobs:
       - name: List built artifacts
         shell: bash
         run: |
-          echo "=== bundle directory ==="
-          find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
-          echo "=== release binary ==="
-          ls -lh src-tauri/target/release/${{ matrix.binary-name }} 2>/dev/null || echo "Binary not found at expected path"
-          echo "=== all release dir ==="
-          ls -lh src-tauri/target/release/ 2>/dev/null || echo "release dir not found"
+         echo "=== bundle directory ==="
+         find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
+         echo "=== release binary (generic) ==="
+         ls -lh src-tauri/target/release/${{ matrix.binary-name }} 2>/dev/null || echo "Binary not found at generic path"
+         echo "=== release binary (target-specific) ==="
+         ls -lh src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }} 2>/dev/null || echo "Binary not found at target-specific path"
+         echo "=== all release dir ==="
+         ls -lh src-tauri/target/release/ 2>/dev/null || echo "release dir not found"
 
       - name: Upload bundle (all files in bundle dir)
         uses: actions/upload-artifact@v5
@@ -130,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact-name }}-binary
-          path: src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }}
+          path: src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }}${{ matrix.binary-ext }}
           if-no-files-found: error
 
   release:
