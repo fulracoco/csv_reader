@@ -22,40 +22,50 @@ jobs:
             target: linux
             rust-target: x86_64-unknown-linux-gnu
             artifact-name: csv-reader-linux-x64
-            artifact-path: src-tauri/target/release/bundle/deb/*.deb
-            artifact-path-appimage: src-tauri/target/release/bundle/appimage/*.AppImage
+            bundles: deb,appimage
+            binary-name: csv-reader
+            bundle-glob: src-tauri/target/release/bundle/deb/*.deb
+            bundle-glob2: src-tauri/target/release/bundle/appimage/*.AppImage
 
           # ── Linux ARM64 ────────────────────────────────────────────
-          - os: ubuntu-24.04-arm 
+          - os: ubuntu-24.04-arm
             target: linux
             rust-target: aarch64-unknown-linux-gnu
             artifact-name: csv-reader-linux-arm64
-            artifact-path: src-tauri/target/release/bundle/deb/*.deb
-            artifact-path-appimage: src-tauri/target/release/bundle/appimage/*.AppImage
+            bundles: deb,appimage
+            binary-name: csv-reader
+            bundle-glob: src-tauri/target/release/bundle/deb/*.deb
+            bundle-glob2: src-tauri/target/release/bundle/appimage/*.AppImage
 
           # ── macOS (Apple Silicon) ──────────────────────────────────
           - os: macos-latest
             target: mac
             rust-target: aarch64-apple-darwin
             artifact-name: csv-reader-macos
-            artifact-path: src-tauri/target/release/bundle/dmg/*.dmg
-            artifact-path-appimage: ''
+            bundles: dmg
+            binary-name: csv-reader
+            bundle-glob: src-tauri/target/release/bundle/dmg/*.dmg
+            bundle-glob2: ''
 
           # ── Windows x64 ────────────────────────────────────────────
           - os: windows-latest
             target: win
             rust-target: x86_64-pc-windows-msvc
             artifact-name: csv-reader-win-x64
-            artifact-path: src-tauri/target/release/bundle/msi/*.msi
-            artifact-path-appimage: ''
+            bundles: nsis
+            binary-name: csv-reader.exe
+            bundle-glob: src-tauri/target/release/bundle/nsis/*.exe
+            bundle-glob2: ''
 
           # ── Windows ARM64 ──────────────────────────────────────────
           - os: windows-latest
             target: win
             rust-target: aarch64-pc-windows-msvc
             artifact-name: csv-reader-win-arm64
-            artifact-path: src-tauri/target/release/bundle/msi/*.msi
-            artifact-path-appimage: ''
+            bundles: nsis
+            binary-name: csv-reader.exe
+            bundle-glob: src-tauri/target/release/bundle/nsis/*.exe
+            bundle-glob2: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -94,27 +104,30 @@ jobs:
       - name: Build Tauri app (${{ matrix.target }} ${{ matrix.rust-target }})
         shell: bash
         run: |
-          npx tauri build --target ${{ matrix.rust-target }} --bundles deb,appimage,dmg,msi 2>&1 || true
-          if [ -d "src-tauri/target/release/bundle" ]; then
-            echo "Build completed, checking bundles..."
-            find src-tauri/target/release/bundle -type f 2>/dev/null || echo "No bundle files found"
-          fi
+          npx tauri build --target ${{ matrix.rust-target }} --bundles ${{ matrix.bundles }}
 
-      - name: Upload artifact (primary)
+      - name: Upload installer bundle
         uses: actions/upload-artifact@v5
-        if: matrix.artifact-path != ''
+        if: matrix.bundle-glob != ''
         continue-on-error: true
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.artifact-path }}
+          path: ${{ matrix.bundle-glob }}
 
-      - name: Upload artifact (AppImage)
+      - name: Upload installer bundle (secondary)
         uses: actions/upload-artifact@v5
-        if: matrix.artifact-path-appimage != ''
+        if: matrix.bundle-glob2 != ''
         continue-on-error: true
         with:
           name: ${{ matrix.artifact-name }}-appimage
-          path: ${{ matrix.artifact-path-appimage }}
+          path: ${{ matrix.bundle-glob2 }}
+
+      - name: Upload raw binary
+        uses: actions/upload-artifact@v5
+        continue-on-error: true
+        with:
+          name: ${{ matrix.artifact-name }}-binary
+          path: src-tauri/target/release/${{ matrix.binary-name }}
 
   release:
     needs: build
