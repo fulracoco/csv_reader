@@ -470,6 +470,7 @@ dependencies = [
 name = "csv-reader"
 version = "0.0.8"
 dependencies = [
+ "memchr",
  "memmap2",
  "rayon",
  "serde",

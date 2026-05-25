@@ -139,13 +139,16 @@ pub fn search_csv(
     query: String,
     col_filter: Option<u32>,
     case_sensitive: Option<bool>,
+    max_results: Option<u32>,
 ) -> Result<Vec<SearchResult>, String> {
     let case_sensitive = case_sensitive.unwrap_or(false);
+    let max_results = max_results.unwrap_or(500);
     let app_handle = app.clone();
     engine.lock().unwrap().search_with_progress(
         &query,
         col_filter,
         case_sensitive,
+        max_results,
         move |done, total| {
             let _ = app_handle.emit("search-progress", SearchProgress { done, total });
         },

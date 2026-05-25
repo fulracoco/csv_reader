@@ -1,3 +1,4 @@
+use memchr::memmem;
 use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 const MAX_CELL_PREVIEW: usize = 500;
@@ -54,7 +55,7 @@ pub struct CsvEngine {
     mmap: Option<Arc<Mmap>>,
     file_path: String,
     file_size: u64,
-    offsets: Vec<u64>,
+    offsets: Arc<Vec<u64>>,
     headers: Vec<String>,
     delimiter: u8,
     encoding: String,
@@ -69,7 +70,7 @@ impl CsvEngine {
             mmap: None,
             file_path: String::new(),
             file_size: 0,
-            offsets: Vec::new(),
+            offsets: Arc::new(Vec::new()),
             headers: Vec::new(),
             delimiter: b',',
             encoding: String::from("utf8"),
@@ -98,7 +99,7 @@ impl CsvEngine {
             self.mmap = Some(Arc::new(mmap));
             self.file_path = file_path.to_string();
             self.file_size = file_size;
-            self.offsets = Vec::new();
+            self.offsets = Arc::new(Vec::new());
             self.headers = Vec::new();
             self.delimiter = b',';
             self.encoding = encoding;
@@ -126,7 +127,7 @@ impl CsvEngine {
         self.mmap = Some(Arc::new(mmap));
         self.file_path = file_path.to_string();
         self.file_size = file_size;
-        self.offsets = offsets;
+        self.offsets = Arc::new(offsets);
         self.headers = headers.clone();
         self.delimiter = delimiter as u8;
         self.encoding = encoding;
@@ -406,7 +407,7 @@ impl CsvEngine {
         self.mmap = None;
         self.cache.clear();
         self.cache_order.clear();
-        self.offsets.clear();
+        self.offsets = Arc::new(Vec::new());
         self.headers.clear();
         self.file_path.clear();
         self.file_size = 0;
@@ -444,36 +445,42 @@ impl CsvEngine {
         query: &str,
         col_filter: Option<u32>,
         case_sensitive: bool,
+        max_results: u32,
         on_progress: impl Fn(u32, u32) + Send + Sync,
     ) -> Result<Vec<SearchResult>, String> {
         let mmap = Arc::clone(self.mmap.as_ref().ok_or("No file open")?);
-        let offsets = self.offsets.clone();
+        let offsets = Arc::clone(&self.offsets);
         let encoding = self.encoding.clone();
         let delimiter = self.delimiter;
         let file_size = self.file_size;
         let headers = self.headers.clone();
+        let query_owned = query.to_string();
 
         if offsets.len() <= 1 || query.is_empty() {
             return Ok(Vec::new());
         }
 
         let total = (offsets.len() - 1) as u32;
-        let query_owned = query.to_string();
-
         let is_utf8 = encoding == "utf8";
         let query_is_ascii = query.chars().all(|c| c.is_ascii());
         let can_use_raw = is_utf8 && case_sensitive && query_is_ascii;
         let query_bytes = if can_use_raw {
-            Some(query.as_bytes().to_vec())
+            Some(query.as_bytes())
         } else {
             None
         };
 
-        let counter = AtomicU32::new(0);
+        let scanned = AtomicU32::new(0);
+        let collected = AtomicU32::new(0);
+        let cancelled = AtomicBool::new(false);
 
         let results: Vec<SearchResult> = (1..offsets.len())
             .into_par_iter()
             .filter_map(|i| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return None;
+                }
+
                 let start = offsets[i] as usize;
                 let end = if i + 1 < offsets.len() {
                     offsets[i + 1] as usize
@@ -485,10 +492,9 @@ impl CsvEngine {
                 }
                 let row_bytes = &mmap[start..end.min(mmap.len())];
 
-                let row_contains = if let Some(ref qb) = query_bytes {
-                    row_bytes
-                        .windows(qb.len())
-                        .any(|w| w == qb.as_slice())
+                // SIMD-accelerated byte search via memchr
+                let row_contains = if let Some(qb) = query_bytes {
+                    memmem::find(row_bytes, qb).is_some()
                 } else if is_utf8 {
                     let row_text = String::from_utf8_lossy(row_bytes);
                     if case_sensitive {
@@ -508,11 +514,22 @@ impl CsvEngine {
                     }
                 };
 
+                let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
+                if done % 16384 == 0 || done == total {
+                    on_progress(done, total);
+                }
+
                 if !row_contains {
                     return None;
                 }
 
-                // Row matched — decode and find matching cells
+                // Check limit before expensive cell parsing
+                let nth = collected.fetch_add(1, Ordering::Relaxed);
+                if nth >= max_results {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return None;
+                }
+
                 let row_text = read_row_text(&mmap, &offsets, i, file_size, &encoding);
                 let cells = parse_csv_line(&row_text, delimiter as char);
 
@@ -563,11 +580,6 @@ impl CsvEngine {
                     return None;
                 }
 
-                let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if done % 4096 == 0 || done == total {
-                    on_progress(done, total);
-                }
-
                 Some(SearchResult {
                     row_index: (i - 1) as u32,
                     matches,
@@ -607,7 +619,6 @@ impl CsvEngine {
     fn reopen(&mut self) -> Result<(), String> {
         self.cache.clear();
         self.cache_order.clear();
-        self.offsets.clear();
 
         let file =
             File::open(&self.file_path).map_err(|e| format!("Cannot reopen file: {}", e))?;
@@ -617,7 +628,7 @@ impl CsvEngine {
         };
 
         self.file_size = mmap.len() as u64;
-        self.offsets = build_index(&mmap, self.bom_offset, &self.encoding);
+        self.offsets = Arc::new(build_index(&mmap, self.bom_offset, &self.encoding));
         self.mmap = Some(Arc::new(mmap));
 
         Ok(())

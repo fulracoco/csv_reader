@@ -23,8 +23,8 @@ const api = {
   updateCell: (row, col, content) => invoke('update_cell', { row, col, content }),
   exportCSV: (colIndices, startRow, endRow) =>
     invoke('export_csv', { colIndices, startRow, endRow }),
-  search: (query, colFilter, caseSensitive) =>
-    invoke('search_csv', { query, colFilter, caseSensitive }),
+  search: (query, colFilter, caseSensitive, maxResults) =>
+    invoke('search_csv', { query, colFilter, caseSensitive, maxResults }),
   onProgress: (callback) => listen('index-progress', (e) => callback(e.payload ?? e)),
   onExportProgress: (callback) => listen('export-progress', (e) => callback(e.payload ?? e)),
   onSearchProgress: (callback) => listen('search-progress', (e) => callback(e.payload ?? e)),
@@ -84,7 +84,6 @@ let isScrolling = false;
 
 let selectedRows = new Set();
 let selectedCols = new Set();
-let searchDebounceTimer = null;
 let searchInProgress = false;
 let lastClickedRow = -1;
 let lastClickedCol = -1;
@@ -164,38 +163,12 @@ detailPanel.addEventListener('click', (e) => {
 
 // ─── Search Events ────────────────────────────────────────────────────────
 
-searchInput.addEventListener('input', () => {
-  clearTimeout(searchDebounceTimer);
-  const query = searchInput.value.trim();
-  if (query.length === 0) {
-    hideSearchResults();
-    return;
-  }
-  if (query.length < 2) return;
-  searchDebounceTimer = setTimeout(() => performSearch(), 300);
-});
-
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     hideSearchResults();
     searchInput.blur();
   }
   if (e.key === 'Enter') {
-    clearTimeout(searchDebounceTimer);
-    performSearch();
-  }
-});
-
-searchColumn.addEventListener('change', () => {
-  if (searchInput.value.trim().length >= 2) {
-    clearTimeout(searchDebounceTimer);
-    performSearch();
-  }
-});
-
-searchCaseSensitive.addEventListener('change', () => {
-  if (searchInput.value.trim().length >= 2) {
-    clearTimeout(searchDebounceTimer);
     performSearch();
   }
 });
@@ -869,10 +842,11 @@ async function performSearch() {
 
   const colFilter = searchColumn.value !== '' ? parseInt(searchColumn.value) : null;
   const caseSensitive = searchCaseSensitive.checked;
+  const maxResults = 500;
 
   try {
-    const results = await api.search(query, colFilter, caseSensitive);
-    renderSearchResults(results, query);
+    const results = await api.search(query, colFilter, caseSensitive, maxResults);
+    renderSearchResults(results, query, maxResults);
   } catch (err) {
     console.error('Search failed:', err);
     searchResultsStatus.textContent = 'Search error: ' + err;
@@ -881,14 +855,13 @@ async function performSearch() {
   }
 }
 
-function renderSearchResults(results, query) {
+function renderSearchResults(results, query, maxResults) {
   if (results.length === 0) {
     searchResultsList.innerHTML = '<div class="search-no-results">No results for "' + escapeHtml(query) + '"</div>';
+    searchResultsStatus.textContent = '0 results';
   } else {
-    const maxDisplay = 200;
-    const displayResults = results.slice(0, maxDisplay);
     let html = '';
-    for (const result of displayResults) {
+    for (const result of results) {
       html += '<div class="search-result-item" data-row="' + result.row_index + '">';
       html += '<div class="search-result-row">Row ' + (result.row_index + 1).toLocaleString() + '</div>';
       html += '<div class="search-result-matches">';
@@ -900,14 +873,15 @@ function renderSearchResults(results, query) {
       }
       html += '</div></div>';
     }
-    if (results.length > maxDisplay) {
-      html += '<div class="search-no-results">Showing first ' + maxDisplay + ' of ' + results.length.toLocaleString() + ' results</div>';
-    }
     searchResultsList.innerHTML = html;
-  }
 
-  searchResultsStatus.textContent = results.length.toLocaleString() + ' result' +
-    (results.length !== 1 ? 's' : '');
+    if (results.length >= maxResults) {
+      searchResultsStatus.textContent = maxResults + '+ results (capped, refine search for more)';
+    } else {
+      searchResultsStatus.textContent = results.length.toLocaleString() + ' result' +
+        (results.length !== 1 ? 's' : '');
+    }
+  }
 
   searchResultsList.querySelectorAll('.search-result-item').forEach(item => {
     item.addEventListener('click', () => {
