@@ -1,4 +1,5 @@
 {
+  "productName": "CSV Reader with WebView2",
   "bundle": {
     "windows": {
       "webviewInstallMode": {
