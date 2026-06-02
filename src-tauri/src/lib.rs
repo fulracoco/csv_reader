@@ -6,6 +6,40 @@ use csv_engine::CsvEngine;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+#[cfg(windows)]
+mod win_webview {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    pub fn show_webview2_missing_dialog() {
+        let title: Vec<u16> = OsStr::new("CSV Reader")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let text: Vec<u16> = OsStr::new(
+            "WebView2 runtime is required but not installed.\n\n\
+             Please download and install WebView2 from:\n\
+             https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+        )
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+        unsafe {
+            MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x00000010);
+        }
+    }
+
+    extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut std::ffi::c_void,
+            lp_text: *const u16,
+            lp_caption: *const u16,
+            u_type: u32,
+        ) -> i32;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -59,7 +93,11 @@ pub fn run() {
             commands::set_language,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            #[cfg(windows)]
+            win_webview::show_webview2_missing_dialog();
+            panic!("error while running tauri application: {e}");
+        });
 }
 
 fn set_language_inner(app: &tauri::AppHandle, locale: &str) -> Result<(), String> {
