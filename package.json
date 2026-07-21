@@ -1,6 +1,6 @@
 {
   "name": "csv-reader",
-  "version": "0.1.13",
+  "version": "0.1.3",
   "description": "Desktop app for reading, searching, editing, and exporting large CSV files",
   "author": "fulracoco",
   "license": "MIT",
