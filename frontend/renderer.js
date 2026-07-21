@@ -80,7 +80,7 @@ let isEditing = false;
 let editingCell = null;
 let originalContent = '';
 let scrollRAF = null;
-let isScrolling = false;
+let resizeRAF = null;
 
 let selectedRows = new Set();
 let selectedCols = new Set();
@@ -115,12 +115,14 @@ scrollContainer.addEventListener('scroll', onScroll, { passive: true });
 scrollContainer.addEventListener('scroll', syncHeaderScroll, { passive: true });
 
 window.addEventListener('resize', () => {
-  if (fileInfo) {
+  if (!fileInfo || resizeRAF) return;
+  resizeRAF = requestAnimationFrame(() => {
+    resizeRAF = null;
     calcColumnWidth();
     buildHeader();
     setupVirtualScroll();
     scheduleRender();
-  }
+  });
 });
 
 api.onMenuOpenFile(() => {
@@ -181,6 +183,13 @@ searchClearBtn.addEventListener('click', () => {
 
 searchCloseBtn.addEventListener('click', hideSearchResults);
 
+searchResultsList.addEventListener('click', (e) => {
+  const item = e.target.closest('.search-result-item');
+  if (!item) return;
+  const rowIndex = parseInt(item.dataset.row);
+  if (!isNaN(rowIndex)) navigateToRow(rowIndex);
+});
+
 document.addEventListener('click', (e) => {
   if (!searchResultsPanel.classList.contains('hidden') &&
       !e.target.closest('.search-container') &&
@@ -193,12 +202,22 @@ document.addEventListener('click', (e) => {
 
 rowsContainer.addEventListener('click', (e) => {
   const rowNum = e.target.closest('.row-num');
-  if (!rowNum) return;
-  const row = rowNum.closest('.table-row');
-  if (!row) return;
-  const rowIndex = parseInt(row.dataset.rowIndex);
-  if (isNaN(rowIndex)) return;
-  handleRowClick(rowIndex, e.ctrlKey || e.metaKey, e.shiftKey);
+  if (rowNum) {
+    const row = rowNum.closest('.table-row');
+    if (!row) return;
+    const rowIndex = parseInt(row.dataset.rowIndex);
+    if (isNaN(rowIndex)) return;
+    handleRowClick(rowIndex, e.ctrlKey || e.metaKey, e.shiftKey);
+    return;
+  }
+
+  const cell = e.target.closest('.table-cell');
+  if (cell) onCellClick(e, cell);
+});
+
+rowsContainer.addEventListener('dblclick', (e) => {
+  const cell = e.target.closest('.table-cell');
+  if (cell) onCellDoubleClick(e, cell);
 });
 
 tableHeader.addEventListener('click', (e) => {
@@ -277,10 +296,6 @@ function updateSelectionUI() {
   }
 }
 
-scrollContainer.addEventListener('scroll', () => {
-  tableHeader.scrollLeft = scrollContainer.scrollLeft;
-}, { passive: true });
-
 // ─── File Open ─────────────────────────────────────────────────────────────
 
 async function openFile() {
@@ -289,32 +304,37 @@ async function openFile() {
   btn.textContent = 'Indexing...';
   btn.disabled = true;
 
-  const info = await api.openFile();
+  try {
+    const info = await api.openFile();
+    if (!info) return;
 
-  btn.innerHTML = origContent;
-  btn.disabled = false;
+    fileInfo = info;
+    elementPool = [];
+    clearSelection();
+    welcome.classList.add('hidden');
+    mainView.classList.remove('hidden');
+    closeDetail();
 
-  if (!info) return;
+    fileNameEl.textContent = info.file_name;
+    fileStatsEl.textContent = formatFileInfo(info);
+    fileNameEl.title = info.file_name;
+    fileStatsEl.title = fileStatsEl.textContent;
+    statusText.textContent = `Loaded ${info.row_count.toLocaleString()} rows, ${info.column_count} columns`;
 
-  fileInfo = info;
-  elementPool = [];
-  clearSelection();
-  welcome.classList.add('hidden');
-  mainView.classList.remove('hidden');
-  closeDetail();
-
-  fileNameEl.textContent = info.file_name;
-  fileStatsEl.textContent = formatFileInfo(info);
-  fileNameEl.title = info.file_name;
-  fileStatsEl.title = fileStatsEl.textContent;
-  statusText.textContent = `Loaded ${info.row_count.toLocaleString()} rows, ${info.column_count} columns`;
-
-  calcColumnWidth();
-  buildHeader();
-  populateSearchColumns();
-  setupVirtualScroll();
-  scrollContainer.scrollTop = 0;
-  requestAnimationFrame(() => scheduleRender());
+    calcColumnWidth();
+    buildHeader();
+    populateSearchColumns();
+    setupVirtualScroll();
+    scrollContainer.scrollTop = 0;
+    requestAnimationFrame(() => scheduleRender());
+  } catch (err) {
+    console.error('Failed to open file:', err);
+    statusText.textContent = 'Error opening file';
+    showToast('Open failed: ' + err);
+  } finally {
+    btn.innerHTML = origContent;
+    btn.disabled = false;
+  }
 }
 
 function formatFileInfo(info) {
@@ -352,7 +372,8 @@ function buildHeader() {
 function calcColumnWidth() {
   const containerWidth = scrollContainer.clientWidth || window.innerWidth - 32;
   const avail = containerWidth - 64;
-  colWidth = Math.max(MIN_COL_WIDTH, Math.floor(avail / fileInfo.column_count));
+  const columnCount = Math.max(1, fileInfo.column_count);
+  colWidth = Math.max(MIN_COL_WIDTH, Math.floor(avail / columnCount));
   totalWidth = 64 + colWidth * fileInfo.column_count;
 }
 
@@ -399,8 +420,6 @@ function setupVirtualScroll() {
       cell.className = 'table-cell';
       cell.style.width = colWidth + 'px';
       cell.style.minWidth = colWidth + 'px';
-      cell.addEventListener('click', (e) => onCellClick(e, cell));
-      cell.addEventListener('dblclick', (e) => onCellDoubleClick(e, cell));
       row.appendChild(cell);
     }
 
@@ -560,8 +579,6 @@ function createRowElement() {
     cell.className = 'table-cell';
     cell.style.width = colWidth + 'px';
     cell.style.minWidth = colWidth + 'px';
-    cell.addEventListener('click', (e) => onCellClick(e, cell));
-    cell.addEventListener('dblclick', (e) => onCellDoubleClick(e, cell));
     row.appendChild(cell);
   }
 
@@ -884,15 +901,6 @@ function renderSearchResults(results, query, maxResults) {
         (results.length !== 1 ? 's' : '');
     }
   }
-
-  searchResultsList.querySelectorAll('.search-result-item').forEach(item => {
-    item.addEventListener('click', () => {
-      const rowIndex = parseInt(item.dataset.row);
-      if (!isNaN(rowIndex)) {
-        navigateToRow(rowIndex);
-      }
-    });
-  });
 
   searchResultsPanel.classList.remove('hidden');
 }

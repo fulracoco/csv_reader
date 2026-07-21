@@ -93,6 +93,8 @@ npm run dev
 | `npm run build:mac-x64` | Build macOS Intel |
 | `npm run build:mac-arm64` | Build macOS Apple Silicon |
 | `npm run build:linux` | Build Linux x64 |
+| `npm version 0.1.14 --no-git-tag-version` | Update the single version source and sync npm/Cargo metadata |
+| `npm run version:check` | Verify that all version metadata is consistent |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | Compile and run Rust tests |
 
 ## Architecture

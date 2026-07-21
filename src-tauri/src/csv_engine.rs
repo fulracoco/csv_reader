@@ -1,4 +1,4 @@
-use memchr::memmem;
+use memchr::{memchr2_iter, memchr_iter, memmem};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -83,12 +83,9 @@ impl CsvEngine {
     pub fn open(&mut self, file_path: &str) -> Result<OpenResult, String> {
         self.close();
 
-        let file =
-            File::open(file_path).map_err(|e| format!("Cannot open file: {}", e))?;
+        let file = File::open(file_path).map_err(|e| format!("Cannot open file: {}", e))?;
 
-        let mmap = unsafe {
-            Mmap::map(&file).map_err(|e| format!("Cannot mmap file: {}", e))?
-        };
+        let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Cannot mmap file: {}", e))? };
 
         let file_size = mmap.len() as u64;
         let (encoding, bom_offset) = detect_bom(&mmap);
@@ -290,9 +287,7 @@ impl CsvEngine {
             let mut lines = Vec::with_capacity(row_count + 1);
             for i in 0..=row_count {
                 let text = read_row_text(mmap, &self.offsets, i, self.file_size, &self.encoding);
-                let text = text
-                    .trim_end_matches(|c: char| c == '\r' || c == '\n')
-                    .to_string();
+                let text = text.trim_end_matches(['\r', '\n']).to_string();
                 lines.push(text);
             }
             lines
@@ -309,8 +304,7 @@ impl CsvEngine {
 
         {
             let mut file = BufWriter::new(
-                File::create(&self.file_path)
-                    .map_err(|e| format!("Cannot write file: {}", e))?,
+                File::create(&self.file_path).map_err(|e| format!("Cannot write file: {}", e))?,
             );
 
             if self.encoding == "utf16le" {
@@ -357,8 +351,7 @@ impl CsvEngine {
         let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
 
         let mut file = BufWriter::new(
-            File::create(output_path)
-                .map_err(|e| format!("Cannot create file: {}", e))?,
+            File::create(output_path).map_err(|e| format!("Cannot create file: {}", e))?,
         );
 
         file.write_all(&[0xEF, 0xBB, 0xBF])
@@ -381,8 +374,13 @@ impl CsvEngine {
             if data_row >= self.offsets.len() {
                 break;
             }
-            let text =
-                read_row_text(mmap, &self.offsets, data_row, self.file_size, &self.encoding);
+            let text = read_row_text(
+                mmap,
+                &self.offsets,
+                data_row,
+                self.file_size,
+                &self.encoding,
+            );
             let parsed = parse_csv_line(&text, delimiter);
             let line: Vec<String> = col_indices
                 .iter()
@@ -397,8 +395,7 @@ impl CsvEngine {
                 .map_err(|e| format!("Write error: {}", e))?;
         }
 
-        file.flush()
-            .map_err(|e| format!("Flush error: {}", e))?;
+        file.flush().map_err(|e| format!("Flush error: {}", e))?;
 
         Ok(())
     }
@@ -454,21 +451,15 @@ impl CsvEngine {
         let delimiter = self.delimiter;
         let file_size = self.file_size;
         let headers = self.headers.clone();
-        let query_owned = query.to_string();
-
         if offsets.len() <= 1 || query.is_empty() {
             return Ok(Vec::new());
         }
 
         let total = (offsets.len() - 1) as u32;
         let is_utf8 = encoding == "utf8";
-        let query_is_ascii = query.chars().all(|c| c.is_ascii());
-        let can_use_raw = is_utf8 && case_sensitive && query_is_ascii;
-        let query_bytes = if can_use_raw {
-            Some(query.as_bytes())
-        } else {
-            None
-        };
+        let query_is_ascii = query.is_ascii();
+        let query_bytes = query.as_bytes();
+        let query_lower = (!case_sensitive).then(|| query.to_lowercase());
 
         let scanned = AtomicU32::new(0);
         let collected = AtomicU32::new(0);
@@ -493,40 +484,27 @@ impl CsvEngine {
                 let row_bytes = &mmap[start..end.min(mmap.len())];
 
                 // SIMD-accelerated byte search via memchr
-                let row_contains = if let Some(qb) = query_bytes {
-                    memmem::find(row_bytes, qb).is_some()
+                let row_contains = if is_utf8 && query_is_ascii && case_sensitive {
+                    memmem::find(row_bytes, query_bytes).is_some()
+                } else if is_utf8 && query_is_ascii {
+                    contains_ascii_case_insensitive(row_bytes, query_bytes)
                 } else if is_utf8 {
                     let row_text = String::from_utf8_lossy(row_bytes);
-                    if case_sensitive {
-                        row_text.contains(&query_owned)
-                    } else {
-                        row_text.to_lowercase().contains(&query_owned.to_lowercase())
-                    }
+                    contains_text(&row_text, query, query_lower.as_deref())
                 } else {
                     let row_text = read_row_text(&mmap, &offsets, i, file_size, &encoding);
                     if row_text.is_empty() {
                         return None;
                     }
-                    if case_sensitive {
-                        row_text.contains(&query_owned)
-                    } else {
-                        row_text.to_lowercase().contains(&query_owned.to_lowercase())
-                    }
+                    contains_text(&row_text, query, query_lower.as_deref())
                 };
 
                 let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
-                if done % 16384 == 0 || done == total {
+                if done.is_multiple_of(16384) || done == total {
                     on_progress(done, total);
                 }
 
                 if !row_contains {
-                    return None;
-                }
-
-                // Check limit before expensive cell parsing
-                let nth = collected.fetch_add(1, Ordering::Relaxed);
-                if nth >= max_results {
-                    cancelled.store(true, Ordering::Relaxed);
                     return None;
                 }
 
@@ -536,16 +514,16 @@ impl CsvEngine {
                 let matches: Vec<CellMatch> = if let Some(ci) = col_filter {
                     let ci = ci as usize;
                     if let Some(cell_text) = cells.get(ci) {
-                        let found = if case_sensitive {
-                            cell_text.contains(&query_owned)
-                        } else {
-                            cell_text.to_lowercase().contains(&query_owned.to_lowercase())
-                        };
+                        let found = contains_text(cell_text, query, query_lower.as_deref());
                         if found {
                             vec![CellMatch {
                                 col_index: ci as u32,
                                 col_name: headers.get(ci).cloned().unwrap_or_default(),
-                                cell_text: extract_match_context(cell_text, &query_owned, case_sensitive),
+                                cell_text: extract_match_context(
+                                    cell_text,
+                                    query,
+                                    query_lower.as_deref(),
+                                ),
                             }]
                         } else {
                             vec![]
@@ -558,16 +536,16 @@ impl CsvEngine {
                         .iter()
                         .enumerate()
                         .filter_map(|(ci, cell_text)| {
-                            let found = if case_sensitive {
-                                cell_text.contains(&query_owned)
-                            } else {
-                                cell_text.to_lowercase().contains(&query_owned.to_lowercase())
-                            };
+                            let found = contains_text(cell_text, query, query_lower.as_deref());
                             if found {
                                 Some(CellMatch {
                                     col_index: ci as u32,
                                     col_name: headers.get(ci).cloned().unwrap_or_default(),
-                                    cell_text: extract_match_context(cell_text, &query_owned, case_sensitive),
+                                    cell_text: extract_match_context(
+                                        cell_text,
+                                        query,
+                                        query_lower.as_deref(),
+                                    ),
                                 })
                             } else {
                                 None
@@ -577,6 +555,12 @@ impl CsvEngine {
                 };
 
                 if matches.is_empty() {
+                    return None;
+                }
+
+                let nth = collected.fetch_add(1, Ordering::Relaxed);
+                if nth >= max_results {
+                    cancelled.store(true, Ordering::Relaxed);
                     return None;
                 }
 
@@ -620,12 +604,9 @@ impl CsvEngine {
         self.cache.clear();
         self.cache_order.clear();
 
-        let file =
-            File::open(&self.file_path).map_err(|e| format!("Cannot reopen file: {}", e))?;
+        let file = File::open(&self.file_path).map_err(|e| format!("Cannot reopen file: {}", e))?;
 
-        let mmap = unsafe {
-            Mmap::map(&file).map_err(|e| format!("Cannot mmap file: {}", e))?
-        };
+        let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Cannot mmap file: {}", e))? };
 
         self.file_size = mmap.len() as u64;
         self.offsets = Arc::new(build_index(&mmap, self.bom_offset, &self.encoding));
@@ -645,39 +626,86 @@ impl Default for CsvEngine {
 
 fn truncate_cell(text: &str, max_len: usize) -> String {
     if text.len() > max_len {
-        text[..max_len].to_string()
+        let mut end = max_len;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_string()
     } else {
         text.to_string()
     }
 }
 
-fn extract_match_context(cell_text: &str, query: &str, case_sensitive: bool) -> String {
-    let match_pos = if case_sensitive {
-        cell_text.find(query)
-    } else {
-        let lower = cell_text.to_lowercase();
-        let ql = query.to_lowercase();
-        lower.find(&ql)
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    let first_lower = needle[0].to_ascii_lowercase();
+    let first_upper = needle[0].to_ascii_uppercase();
+    let is_match = |start: usize| {
+        haystack
+            .get(start..start + needle.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
     };
 
-    let mpos = match match_pos {
-        Some(pos) => pos,
+    if first_lower == first_upper {
+        memchr_iter(first_lower, haystack).any(is_match)
+    } else {
+        memchr2_iter(first_lower, first_upper, haystack).any(is_match)
+    }
+}
+
+fn contains_text(text: &str, query: &str, query_lower: Option<&str>) -> bool {
+    match query_lower {
+        Some(lower) => text.to_lowercase().contains(lower),
+        None => text.contains(query),
+    }
+}
+
+fn find_case_insensitive(text: &str, query_lower: &str) -> Option<(usize, usize)> {
+    for (start, _) in text.char_indices() {
+        let mut candidate = String::new();
+        for (relative_end, ch) in text[start..].char_indices() {
+            candidate.extend(ch.to_lowercase());
+            let end = start + relative_end + ch.len_utf8();
+            if candidate.starts_with(query_lower) {
+                return Some((start, end));
+            }
+            if !query_lower.starts_with(&candidate) {
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn extract_match_context(cell_text: &str, query: &str, query_lower: Option<&str>) -> String {
+    let match_range = if let Some(lower) = query_lower {
+        find_case_insensitive(cell_text, lower)
+    } else {
+        cell_text
+            .find(query)
+            .map(|start| (start, start + query.len()))
+    };
+
+    let (match_start, match_end) = match match_range {
+        Some(range) => range,
         None => return truncate_cell(cell_text, 200),
     };
 
-    let qlen = query.len();
     let radius = 90usize;
-    let cell_len = cell_text.len();
-
-    let preview_start = mpos.saturating_sub(radius);
-    let preview_end = (mpos + qlen + radius).min(cell_len);
+    let mut preview_start = match_start.saturating_sub(radius);
+    while !cell_text.is_char_boundary(preview_start) {
+        preview_start += 1;
+    }
+    let mut preview_end = (match_end + radius).min(cell_text.len());
+    while !cell_text.is_char_boundary(preview_end) {
+        preview_end -= 1;
+    }
 
     let mut preview = cell_text[preview_start..preview_end].to_string();
 
     if preview_start > 0 {
         preview.insert_str(0, "...");
     }
-    if preview_end < cell_len {
+    if preview_end < cell_text.len() {
         preview.push_str("...");
     }
 
@@ -762,7 +790,7 @@ fn build_index_utf8(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size
 
 fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size: usize) {
     let mut pos = start;
-    if pos % 2 != 0 && pos + 1 < file_size {
+    if !pos.is_multiple_of(2) && pos + 1 < file_size {
         pos += 1;
     }
 
@@ -796,7 +824,7 @@ fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_s
 
 fn build_index_utf16be(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size: usize) {
     let mut pos = start;
-    if pos % 2 != 0 && pos + 1 < file_size {
+    if !pos.is_multiple_of(2) && pos + 1 < file_size {
         pos += 1;
     }
 
@@ -880,17 +908,13 @@ fn parse_csv_line(text: &str, delimiter: char) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
+    let mut chars = text.chars().peekable();
 
-    while i < chars.len() {
-        let ch = chars[i];
-
+    while let Some(ch) = chars.next() {
         if in_quotes {
             if ch == '"' {
-                if i + 1 < chars.len() && chars[i + 1] == '"' {
+                if chars.next_if_eq(&'"').is_some() {
                     current.push('"');
-                    i += 1;
                 } else {
                     in_quotes = false;
                 }
@@ -905,7 +929,6 @@ fn parse_csv_line(text: &str, delimiter: char) -> Vec<String> {
         } else if ch != '\r' && ch != '\n' {
             current.push(ch);
         }
-        i += 1;
     }
     result.push(current);
     result
@@ -913,36 +936,35 @@ fn parse_csv_line(text: &str, delimiter: char) -> Vec<String> {
 
 fn detect_delimiter(text: &str) -> char {
     let candidates = [',', '\t', ';', '|'];
-    let mut best = ',';
-    let mut best_count = 0u32;
+    let mut counts = [0u32; 4];
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
 
-    for &delim in &candidates {
-        let mut count = 0u32;
-        let mut in_quotes = false;
-        let chars: Vec<char> = text.chars().collect();
-        let mut j = 0;
-
-        while j < chars.len() {
-            let ch = chars[j];
-            if ch == '"' {
-                if in_quotes && j + 1 < chars.len() && chars[j + 1] == '"' {
-                    j += 1;
-                } else {
-                    in_quotes = !in_quotes;
-                }
-            } else if ch == delim && !in_quotes {
-                count += 1;
+    while let Some(ch) = chars.next() {
+        if ch == '"' {
+            if in_quotes && chars.next_if_eq(&'"').is_some() {
+                continue;
             }
-            j += 1;
-        }
-
-        if count > best_count {
-            best_count = count;
-            best = delim;
+            in_quotes = !in_quotes;
+        } else if !in_quotes {
+            if let Some(index) = candidates.iter().position(|&candidate| candidate == ch) {
+                counts[index] += 1;
+            }
         }
     }
 
-    best
+    let mut best_index = 0;
+    for index in 1..counts.len() {
+        if counts[index] > counts[best_index] {
+            best_index = index;
+        }
+    }
+
+    if counts[best_index] == 0 {
+        ','
+    } else {
+        candidates[best_index]
+    }
 }
 
 fn csv_quote_value(val: &str) -> String {
@@ -959,4 +981,74 @@ fn format_csv_row(cells: &[String], delimiter: char) -> String {
         .map(|c| csv_quote_value(c))
         .collect::<Vec<_>>()
         .join(&delimiter.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::ThreadPoolBuilder;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn parses_quoted_delimiter_and_escaped_quote() {
+        assert_eq!(
+            parse_csv_line("alpha,\"bravo,charlie\",\"say \"\"hi\"\"\"\r\n", ','),
+            vec!["alpha", "bravo,charlie", "say \"hi\""]
+        );
+    }
+
+    #[test]
+    fn detects_delimiter_outside_quotes() {
+        assert_eq!(detect_delimiter("name;\"notes,with,commas\";value"), ';');
+        assert_eq!(detect_delimiter("plain text"), ',');
+    }
+
+    #[test]
+    fn truncates_unicode_at_character_boundary() {
+        let text = "a".repeat(499) + "中tail";
+        let truncated = truncate_cell(&text, 500);
+        assert_eq!(truncated, "a".repeat(499));
+    }
+
+    #[test]
+    fn extracts_case_insensitive_unicode_context_safely() {
+        let text = "前".repeat(120) + "TARGET" + &"后".repeat(120);
+        let context = extract_match_context(&text, "target", Some("target"));
+        assert!(context.contains("TARGET"));
+        assert!(context.starts_with("..."));
+        assert!(context.ends_with("..."));
+    }
+
+    #[test]
+    fn filtered_search_counts_only_matching_column() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "csv-reader-search-{}-{unique}.csv",
+            std::process::id()
+        ));
+        fs::write(&path, "target,other\nnone,needle\nneedle,value\n")
+            .expect("fixture should be writable");
+
+        let mut engine = CsvEngine::new();
+        engine
+            .open(path.to_str().expect("temporary path should be valid UTF-8"))
+            .expect("fixture should open");
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("test pool should build");
+        let results = pool
+            .install(|| engine.search_with_progress("needle", Some(0), false, 1, |_, _| {}))
+            .expect("search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].row_index, 1);
+
+        engine.close();
+        fs::remove_file(path).expect("fixture should be removable");
+    }
 }

@@ -26,7 +26,12 @@ mod win_webview {
         .collect();
 
         unsafe {
-            MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x00000010);
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                0x00000010,
+            );
         }
     }
 

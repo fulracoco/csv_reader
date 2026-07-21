@@ -130,6 +130,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify version metadata
+        run: npm run version:check
+
       - name: Resolve app version
         shell: bash
         run: |

@@ -1,7 +1,7 @@
 {
   "productName": "CSV Reader",
   "version": "../package.json",
-  "identifier": "com.csvreader.app",
+  "identifier": "top.fulracoco.csvreader",
   "build": {
     "frontendDist": "../frontend"
   },

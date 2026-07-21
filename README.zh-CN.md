@@ -93,6 +93,8 @@ npm run dev
 | `npm run build:mac-x64` | 构建 macOS Intel 包 |
 | `npm run build:mac-arm64` | 构建 macOS Apple Silicon 包 |
 | `npm run build:linux` | 构建 Linux x64 包 |
+| `npm version 0.1.14 --no-git-tag-version` | 更新唯一版本源并同步 npm 与 Cargo 元数据 |
+| `npm run version:check` | 检查所有版本元数据是否一致 |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 编译并运行 Rust 测试 |
 
 ## 项目架构

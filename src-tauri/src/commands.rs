@@ -1,8 +1,8 @@
 use crate::csv_engine::{CsvEngine, OpenResult, RowData, SearchProgress, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, State};
-use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri_plugin_dialog::DialogExt;
 
 // ─── App State ───────────────────────────────────────────────────────────────
@@ -174,7 +174,11 @@ pub fn build_menu(
     locale: &str,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let t = |en: &'static str, zh: &'static str| -> &'static str {
-        if locale == "zh" { zh } else { en }
+        if locale == "zh" {
+            zh
+        } else {
+            en
+        }
     };
 
     let file_submenu = SubmenuBuilder::new(app, t("File", "文件"))
@@ -201,21 +205,12 @@ pub fn build_menu(
         .build()?;
 
     let help_submenu = SubmenuBuilder::new(app, t("Help", "帮助"))
-        .item(
-            &MenuItemBuilder::with_id("menu_issues", t("Issues", "问题反馈"))
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("menu_issues", t("Issues", "问题反馈")).build(app)?)
         .separator()
         .item(
             &SubmenuBuilder::new(app, t("Language", "语言"))
-                .item(
-                    &MenuItemBuilder::with_id("lang_en", t("English", "English"))
-                        .build(app)?,
-                )
-                .item(
-                    &MenuItemBuilder::with_id("lang_zh", t("中文", "中文"))
-                        .build(app)?,
-                )
+                .item(&MenuItemBuilder::with_id("lang_en", t("English", "English")).build(app)?)
+                .item(&MenuItemBuilder::with_id("lang_zh", t("中文", "中文")).build(app)?)
                 .build()?,
         )
         .build()?;
