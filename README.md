@@ -1,85 +1,121 @@
 # CSV Reader
 
-A cross-platform desktop application for reading, searching, and exporting large CSV files. Built with Tauri + Rust.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-Handles files of any size (tested with 2GB+/10M rows) by using memory-mapped byte-offset indexing and parallel search in Rust — the entire file is never loaded into memory.
+A cross-platform desktop app for reading, searching, editing, and exporting large delimited-text files. CSV Reader uses Tauri 2 and Rust to keep multi-gigabyte files responsive without loading all file data into physical memory.
 
-![Main interface](screenshot-main.png)
+![CSV Reader main interface](screenshot-main.png)
 
 ## Features
 
-- **File-backed indexing** — scans the file once to build a byte-offset index, then reads only visible rows on demand
-- **Virtual scrolling** — renders only rows in the viewport, smooth even with millions of rows
-- **Parallel search** — multi-threaded search via rayon with SIMD-accelerated byte scanning (memchr), 0 memory when idle
-  ![Search](screenshot-search.png)
-- **Large cell support** — cells containing several MB of text are handled efficiently: preview in table, full content in detail panel on click
-- **Uniform column widths** — all columns have equal width with a 120px minimum; horizontal scrollbar appears when needed
-- **Row/column selection** — click row numbers or column headers to select (Shift for range, Ctrl to toggle)
-- **CSV export** — select columns and row range, export to a new CSV file with proper quoting and BOM for Excel compatibility
-- **Dark theme** — easy on the eyes for long data sessions
+- Memory-mapped file access with an in-memory row-offset index
+- Virtual scrolling that renders only visible rows
+- Parallel, case-sensitive or case-insensitive search with column filtering
+- Full-cell detail view with capped table previews for large values
+- Row and column selection, cell editing, and continuous-range export
+- Automatic delimiter detection for comma, tab, semicolon, and pipe
+- UTF-8 and BOM-marked UTF-16 LE/BE input support
 
-## Prerequisites
+![CSV Reader search results](screenshot-search.png)
 
-- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
-- [Node.js](https://nodejs.org/) v18 or later
-- Linux: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
+## Download and Install
 
-## Quick Start
+Download platform packages from [GitHub Releases](https://github.com/fulracoco/csv_reader/releases).
+
+### Windows
+
+Use the `x64` installer on most PCs and `arm64` on Windows ARM devices. The standard installer can download WebView2 when required; the much larger `with.WebView2` package contains the offline runtime.
+
+### macOS
+
+Use `aarch64.dmg` on Apple Silicon (M1 or newer) and `x64.dmg` on Intel Macs. Current GitHub builds are not signed or notarized by Apple, so Gatekeeper may report that the developer cannot be verified or that the app is damaged.
+
+After dragging **CSV Reader** to Applications, first Control-click the app and choose **Open**. If it is still blocked, run:
 
 ```bash
-git clone git@github.com:fulracoco/csv_reader.git
-cd csv-reader
-npm install
-npm run dev
+xattr -dr com.apple.quarantine "/Applications/CSV Reader.app"
+```
+
+Only bypass quarantine for packages downloaded from this repository's official Releases page.
+
+### Linux
+
+Choose the package matching your architecture: `.deb` for Debian-based distributions or `.AppImage` for a portable build. Make an AppImage executable before launching it:
+
+```bash
+chmod +x CSV.Reader_*.AppImage
 ```
 
 ## Usage
 
 | Action | How |
 |---|---|
-| Open file | Click **Open CSV File** or the folder icon, or `Ctrl+O` |
-| Scroll | Mouse wheel / drag scrollbar (virtual scrolling, only visible rows loaded) |
-| Search | Click search box or `Ctrl+F`, type query, choose column filter, press **Enter** |
-| Navigate to result | Click a search result item to jump to that row |
-| View cell content | Click any cell to open the detail panel on the right |
-| Copy cell | Select cell, press `Ctrl+C`, or click **Copy** in the detail panel |
-| Adjust row height | Use the dropdown in the toolbar (28px–100px) |
-| Select rows | Click row numbers (Shift/Ctrl for multi-select) |
-| Select columns | Click column headers (Shift/Ctrl for multi-select) |
-| Export CSV | Click **Export** → choose columns + row range → save |
+| Open a file | Click **Open** or press `Ctrl/Cmd+O` |
+| Search | Press `Ctrl/Cmd+F`, enter a query, choose a column, then press `Enter` |
+| Inspect a cell | Click a cell to open the full-content panel |
+| Edit a cell | Double-click a cell, or open it and click **Edit** |
+| Select rows/columns | Click row numbers or headers; use Shift for a range and Ctrl/Cmd to toggle |
+| Export | Click **Export**, choose columns and a continuous row range, then save |
+| Change density | Choose a row height from the **Density** menu |
+
+## Development
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) 18 or later
+- [Rust](https://www.rust-lang.org/tools/install) stable toolchain
+- Platform dependencies required by [Tauri 2](https://v2.tauri.app/start/prerequisites/)
+
+On Ubuntu/Debian, install the dependencies used by CI:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libayatana-appindicator3-dev librsvg2-dev libssl-dev \
+  libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xz-utils
+```
+
+### Run Locally
+
+```bash
+git clone https://github.com/fulracoco/csv_reader.git csv-reader
+cd csv-reader
+npm install
+npm run dev
+```
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Start the Tauri development app |
+| `npm run build` | Build a release package for the current platform |
+| `npm run build:win` | Build Windows x64 |
+| `npm run build:mac-x64` | Build macOS Intel |
+| `npm run build:mac-arm64` | Build macOS Apple Silicon |
+| `npm run build:linux` | Build Linux x64 |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | Compile and run Rust tests |
 
 ## Architecture
 
-| File | Purpose |
+| Path | Responsibility |
 |---|---|
-| `src-tauri/src/csv_engine.rs` | Rust CSV engine: memory-mapped I/O, byte-offset indexing, parallel search, LRU cache, parsing |
-| `src-tauri/src/commands.rs` | Tauri IPC command handlers + i18n menu builder |
-| `src-tauri/src/lib.rs` | Tauri app setup, plugin registration, menu event handling |
-| `src-tauri/src/main.rs` | Entry point |
-| `frontend/index.html` | UI layout: welcome screen, toolbar, search bar, virtual table, detail panel, export modal |
-| `frontend/styles.css` | Dark theme, table styling, search results panel, modal, scrollbar customization |
-| `frontend/renderer.js` | Virtual scrolling engine, DOM pool recycling, cell interaction, search UI, export dialog |
+| `frontend/index.html` | Application layout and controls |
+| `frontend/styles.css` | Theme, table, panels, and responsive layout |
+| `frontend/renderer.js` | Virtual scrolling, interaction, search, editing, and export UI |
+| `src-tauri/src/csv_engine.rs` | Memory mapping, indexing, parsing, caching, search, edit, and export |
+| `src-tauri/src/commands.rs` | Tauri IPC commands, dialogs, and localized application menus |
+| `src-tauri/src/lib.rs` | Application setup, plugins, state, and menu events |
+| `.github/workflows/build.yml` | Cross-platform builds and GitHub Release publishing |
 
-### How It Handles Large Files
+The file is memory-mapped, and a one-pass scan records each row's byte offset. Visible rows are parsed on demand and retained in a 500-row cache. Search scans rows in parallel without creating a persistent search index; the UI returns at most 500 matches.
 
-1. **Memory-mapped I/O** — the file is mapped into virtual memory (not read into RAM), so the OS handles paging transparently.
-2. **One-pass indexing** — scans the file byte-by-byte in Rust, records row start positions. For 10M rows this takes a few seconds and uses ~80MB of memory.
-3. **On-demand reading** — only rows visible in the viewport are read from the mmap (~30 rows).
-4. **LRU cache** — 500 most recently accessed rows kept in memory.
-5. **Truncated IPC** — only the first 500 characters of each cell are sent to the renderer. For a file with ~800KB cells, this reduces IPC transfer from 24MB to 30KB per viewport (99.9% reduction). Full content is loaded on demand when a cell is clicked.
-6. **Streaming export** — writes directly to the output file row by row, never holds the full dataset in memory.
-7. **Parallel search** — rayon parallel iterator over mmap rows, SIMD byte-level fast path for ASCII/UTF-8, AtomicBool cancel signal caps results at 500.
+## Performance Notes
 
-## Keyboard Shortcuts
-
-| Key | Action |
-|---|---|
-| `Ctrl+O` | Open file |
-| `Ctrl+F` | Focus search box |
-| `Enter` | Execute search |
-| `Escape` | Close detail panel / close search results / clear selection |
-| `Ctrl+C` | Copy selected cell content |
-| `F11` | Toggle fullscreen |
+- Tested with files larger than 2 GB and datasets containing 10 million rows.
+- Row offsets use roughly 8 bytes per row, so 10 million rows require about 80 MB for the index.
+- Export streams rows to a UTF-8 CSV with a BOM and does not retain the full export in memory.
+- Editing rewrites the source file and temporarily holds its rows in memory. Back up important files and avoid editing very large datasets in place.
+- Indexing and search speed depend on storage, encoding, row width, and CPU resources.
 
 ## License
 

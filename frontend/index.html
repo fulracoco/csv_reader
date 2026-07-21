@@ -11,15 +11,23 @@
     <!-- Welcome screen -->
     <div id="welcome" class="welcome">
       <div class="welcome-content">
-        <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-        </svg>
+        <div class="welcome-icon-wrap" aria-hidden="true">
+          <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>CSV</span>
+        </div>
         <h1>CSV Reader</h1>
-        <p>Open a CSV file to get started. Supports files of any size.</p>
-        <button id="btn-open-welcome" class="btn-primary">Open CSV File</button>
+        <p>Open a CSV file to get started. Designed for multi-gigabyte datasets.</p>
+        <button id="btn-open-welcome" class="btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17" aria-hidden="true">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Open CSV File
+        </button>
       </div>
     </div>
 
@@ -27,22 +35,25 @@
     <div id="main-view" class="main-view hidden">
       <!-- Toolbar -->
       <div id="toolbar" class="toolbar">
-        <button id="btn-open" class="btn-toolbar" title="Open CSV File">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          </svg>
-          Open
-        </button>
-        <div class="toolbar-separator"></div>
-        <span id="file-name" class="file-name"></span>
-        <span id="file-stats" class="file-stats"></span>
-        <button id="btn-export" class="btn-toolbar" title="Export selected rows/columns as CSV">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <div class="file-group">
+          <button id="btn-open" class="btn-toolbar" title="Open CSV File">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span class="button-label">Open</span>
+          </button>
+          <div class="file-meta">
+            <span id="file-name" class="file-name"></span>
+            <span id="file-stats" class="file-stats"></span>
+          </div>
+        </div>
+        <button id="btn-export" class="btn-toolbar" title="Export a row range and selected columns as CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          Export
+          <span class="button-label">Export</span>
         </button>
         <!-- Search -->
         <div class="search-container">
@@ -52,7 +63,7 @@
               <line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
             <input type="text" id="search-input" class="search-input" placeholder="Search..." />
-            <button id="btn-search-clear" class="search-clear-btn" title="Clear">&times;</button>
+            <button id="btn-search-clear" class="search-clear-btn" title="Clear search" aria-label="Clear search">&times;</button>
           </div>
           <select id="search-column" class="search-select">
             <option value="">All Columns</option>
@@ -63,20 +74,19 @@
           <div id="search-results-panel" class="search-results-panel hidden">
             <div class="search-results-header">
               <span id="search-results-status"></span>
-              <button id="btn-search-close" class="search-close-btn" title="Close">&times;</button>
+              <button id="btn-search-close" class="search-close-btn" title="Close results" aria-label="Close results">&times;</button>
             </div>
             <div id="search-results-list" class="search-results-list"></div>
           </div>
         </div>
-        <div class="toolbar-spacer"></div>
         <label class="row-height-label" title="Row height in pixels">
-          Row:
+          <span>Density</span>
           <select id="row-height-select">
-            <option value="28">28px</option>
-            <option value="40" selected>40px</option>
-            <option value="56">56px</option>
-            <option value="72">72px</option>
-            <option value="100">100px</option>
+            <option value="28">Compact 28px</option>
+            <option value="40" selected>Comfortable 40px</option>
+            <option value="56">Relaxed 56px</option>
+            <option value="72">Spacious 72px</option>
+            <option value="100">Expanded 100px</option>
           </select>
         </label>
       </div>
@@ -105,10 +115,12 @@
     <!-- Detail panel -->
     <div id="detail-panel" class="detail-panel hidden">
       <div class="detail-header">
-        <h3>Cell Content</h3>
-        <div class="detail-info">
-          <span id="detail-col"></span>
-          <span id="detail-row"></span>
+        <div class="detail-title-group">
+          <h3>Cell Content</h3>
+          <div class="detail-info">
+            <span id="detail-col"></span>
+            <span id="detail-row"></span>
+          </div>
         </div>
         <div class="detail-actions">
           <button id="btn-copy" class="btn-small" title="Copy to clipboard">
@@ -125,7 +137,7 @@
             </svg>
             Edit
           </button>
-          <button id="btn-close-detail" class="btn-small" title="Close panel">&times;</button>
+          <button id="btn-close-detail" class="btn-small icon-button" title="Close panel" aria-label="Close panel">&times;</button>
         </div>
       </div>
       <div class="detail-body">
@@ -139,7 +151,7 @@
       <div class="modal">
         <div class="modal-header">
           <h3>Export CSV</h3>
-          <button id="btn-close-export" class="btn-small">&times;</button>
+          <button id="btn-close-export" class="btn-small icon-button" title="Close dialog" aria-label="Close dialog">&times;</button>
         </div>
         <div class="modal-body">
           <div class="export-section">
@@ -157,7 +169,7 @@
             </div>
             <div class="export-row-presets">
               <button class="btn-preset" data-preset="all">All rows</button>
-              <button class="btn-preset" data-preset="selected">Selected rows</button>
+              <button class="btn-preset" data-preset="selected" title="Use the first and last selected rows as the range">Selection range</button>
             </div>
           </div>
           <div id="export-status" class="export-status"></div>
@@ -168,8 +180,6 @@
         </div>
       </div>
     </div>
-  </div>
-
   <script src="renderer.js"></script>
 </body>
 </html>

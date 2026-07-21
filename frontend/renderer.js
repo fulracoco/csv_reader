@@ -273,7 +273,7 @@ function updateSelectionUI() {
     const parts = [];
     if (selectedRows.size > 0) parts.push(selectedRows.size + ' row' + (selectedRows.size > 1 ? 's' : ''));
     if (selectedCols.size > 0) parts.push(selectedCols.size + ' col' + (selectedCols.size > 1 ? 's' : ''));
-    statusText.textContent = parts.join(', ') + ' selected — use Export to save';
+    statusText.textContent = parts.join(', ') + ' selected';
   }
 }
 
@@ -285,13 +285,13 @@ scrollContainer.addEventListener('scroll', () => {
 
 async function openFile() {
   const btn = document.getElementById('btn-open-welcome');
-  const origText = btn.textContent;
+  const origContent = btn.innerHTML;
   btn.textContent = 'Indexing...';
   btn.disabled = true;
 
   const info = await api.openFile();
 
-  btn.textContent = origText;
+  btn.innerHTML = origContent;
   btn.disabled = false;
 
   if (!info) return;
@@ -305,6 +305,8 @@ async function openFile() {
 
   fileNameEl.textContent = info.file_name;
   fileStatsEl.textContent = formatFileInfo(info);
+  fileNameEl.title = info.file_name;
+  fileStatsEl.title = fileStatsEl.textContent;
   statusText.textContent = `Loaded ${info.row_count.toLocaleString()} rows, ${info.column_count} columns`;
 
   calcColumnWidth();

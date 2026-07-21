@@ -1,9 +1,0 @@
-{
-  "name": "csv-native",
-  "version": "0.1.0",
-  "main": "csv-native.node",
-  "napi": {
-    "name": "csv-native",
-    "triples": {}
-  }
-}

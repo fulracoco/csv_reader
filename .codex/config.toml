@@ -1,0 +1,5 @@
+# This repository is trusted. Avoid the Windows restricted-token sandbox because
+# the Microsoft Store PowerShell executable cannot be started through it
+# (CreateProcessAsUserW error 5).
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
