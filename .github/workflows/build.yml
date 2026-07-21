@@ -128,7 +128,20 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Resolve app version
+        shell: bash
+        run: |
+          APP_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "${TAG_VERSION}" != "${APP_VERSION}" ]]; then
+              echo "Tag version ${TAG_VERSION} does not match package version ${APP_VERSION}."
+              exit 1
+            fi
+          fi
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Build Tauri app (${{ matrix.target }} ${{ matrix.rust-target }})
         shell: bash
@@ -150,7 +163,7 @@ jobs:
       - name: Upload bundle (all files in bundle dir)
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ matrix.artifact-name }}
+          name: ${{ matrix.artifact-name }}-v${{ env.APP_VERSION }}
           path: |
             src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.deb
             src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
@@ -159,11 +172,18 @@ jobs:
             src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.msi
           if-no-files-found: warn
 
+      - name: Stage raw binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }}${{ matrix.binary-ext }}" \
+            "dist/${{ matrix.artifact-name }}-v${APP_VERSION}${{ matrix.binary-ext }}"
+
       - name: Upload raw binary
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ matrix.artifact-name }}-binary
-          path: src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.binary-name }}${{ matrix.binary-ext }}
+          name: ${{ matrix.artifact-name }}-v${{ env.APP_VERSION }}-binary
+          path: dist/${{ matrix.artifact-name }}-v${{ env.APP_VERSION }}${{ matrix.binary-ext }}
           if-no-files-found: error
 
   release:
