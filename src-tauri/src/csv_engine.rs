@@ -1,7 +1,6 @@
 use memchr::{memchr2_iter, memchr_iter, memmem};
 use memmap2::Mmap;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -16,7 +15,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ─── Public data types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OpenResult {
     pub file_path: String,
     pub file_name: String,
@@ -26,26 +25,27 @@ pub struct OpenResult {
     pub headers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RowData {
     pub cells: Vec<String>,
+    #[allow(dead_code)]
     pub lengths: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     pub row_index: u32,
     pub matches: Vec<CellMatch>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CellMatch {
     pub col_index: u32,
     pub col_name: String,
     pub cell_text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SearchProgress {
     pub done: u32,
     pub total: u32,
@@ -260,6 +260,7 @@ impl CsvEngine {
         Ok(results)
     }
 
+    #[allow(dead_code)]
     pub fn get_rows_by_index(&mut self, indices: &[u32]) -> Result<Vec<Vec<String>>, String> {
         if indices.is_empty() {
             return Ok(Vec::new());
@@ -499,26 +500,32 @@ impl CsvEngine {
         self.bom_offset = 0;
     }
 
+    #[allow(dead_code)]
     pub fn is_open(&self) -> bool {
         self.mmap.is_some()
     }
 
+    #[allow(dead_code)]
     pub fn file_path(&self) -> &str {
         &self.file_path
     }
 
+    #[allow(dead_code)]
     pub fn file_size(&self) -> u64 {
         self.file_size
     }
 
+    #[allow(dead_code)]
     pub fn headers(&self) -> &[String] {
         &self.headers
     }
 
+    #[allow(dead_code)]
     pub fn row_count(&self) -> u32 {
         self.offsets.len().saturating_sub(1) as u32
     }
 
+    #[allow(dead_code)]
     pub fn column_count(&self) -> u32 {
         self.headers.len() as u32
     }

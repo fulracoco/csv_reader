@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-CSV Reader 是一款跨平台桌面应用，用于读取、搜索、编辑和导出大型分隔文本文件。项目基于 Tauri 2 与 Rust，可在不把全部文件数据载入物理内存的情况下流畅处理数 GB 文件。
+CSV Reader 是一款跨平台桌面应用，用于读取、搜索、编辑和导出大型分隔文本文件。项目基于原生 egui 窗口与 Rust，可在不把全部文件数据载入物理内存的情况下流畅处理数 GB 文件。
 
 ![CSV Reader 主界面](screenshot-main.png)
 
@@ -24,7 +24,7 @@ CSV Reader 是一款跨平台桌面应用，用于读取、搜索、编辑和导
 
 ### Windows
 
-大多数电脑请选择 `x64`，Windows ARM 设备请选择 `arm64`。普通安装包会在需要时联网下载 WebView2；体积更大的 `with.WebView2` 安装包已包含离线运行时。
+大多数电脑请选择 `x64`，Windows ARM 设备请选择 `arm64`。原生界面不依赖 WebView2 运行时。
 
 ### macOS
 
@@ -62,16 +62,14 @@ chmod +x CSV.Reader_*.AppImage
 
 ### 前置依赖
 
-- [Node.js](https://nodejs.org/) 18 或更高版本
 - [Rust](https://www.rust-lang.org/tools/install) stable 工具链
-- [Tauri 2](https://v2.tauri.app/start/prerequisites/) 要求的对应平台依赖
+- 对应平台的原生窗口依赖（Linux 构建需要 X11/Wayland 开发头文件）
 
 Ubuntu/Debian 可安装与 CI 一致的依赖：
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-  libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-  libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xz-utils
+sudo apt install libx11-dev libxi-dev libxrandr-dev libxcursor-dev \
+  libxinerama-dev libwayland-dev libxkbcommon-dev
 ```
 
 ### 本地运行
@@ -79,34 +77,25 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
 ```bash
 git clone https://github.com/fulracoco/csv_reader.git csv-reader
 cd csv-reader
-npm install
-npm run dev
+cargo run --manifest-path src-tauri/Cargo.toml
 ```
 
 ### 常用命令
 
 | 命令 | 用途 |
 |---|---|
-| `npm run dev` | 启动 Tauri 开发版应用 |
-| `npm run build` | 为当前平台构建发布包 |
-| `npm run build:win` | 构建 Windows x64 包 |
-| `npm run build:mac-x64` | 构建 macOS Intel 包 |
-| `npm run build:mac-arm64` | 构建 macOS Apple Silicon 包 |
-| `npm run build:linux` | 构建 Linux x64 包 |
-| `npm version 0.1.14 --no-git-tag-version` | 更新唯一版本源并同步 npm 与 Cargo 元数据 |
-| `npm run version:check` | 检查所有版本元数据是否一致 |
+| `cargo run --manifest-path src-tauri/Cargo.toml` | 启动原生 egui 开发版应用 |
+| `cargo build --manifest-path src-tauri/Cargo.toml --release` | 构建优化后的原生二进制文件 |
+| 先运行 `cargo build --manifest-path src-tauri/Cargo.toml --release`，再运行 `cargo packager --manifest-path src-tauri/Cargo.toml --release` | 构建并打包当前平台 |
+| 修改 `src-tauri/Cargo.toml` 中的 `version` | 更新唯一应用版本源 |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 编译并运行 Rust 测试 |
 
 ## 项目架构
 
 | 路径 | 职责 |
 |---|---|
-| `frontend/index.html` | 应用布局与控件 |
-| `frontend/styles.css` | 主题、表格、面板和响应式布局 |
-| `frontend/renderer.js` | 虚拟滚动、交互、搜索、编辑和导出界面 |
+| `src-tauri/src/app.rs` | 原生 egui 界面、虚拟表格、交互、搜索、编辑和导出 |
 | `src-tauri/src/csv_engine.rs` | 内存映射、索引、解析、缓存、搜索、编辑和导出 |
-| `src-tauri/src/commands.rs` | Tauri IPC 命令、文件对话框和本地化应用菜单 |
-| `src-tauri/src/lib.rs` | 应用初始化、插件、状态和菜单事件 |
 | `.github/workflows/build.yml` | 跨平台构建与 GitHub Release 发布 |
 
 应用通过内存映射访问文件，并在首次扫描时记录每一行的字节偏移。可见行按需解析，并保留在 500 行缓存中。搜索会并行扫描各行，不创建持久搜索索引；界面最多返回 500 条结果。

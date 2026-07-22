@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A cross-platform desktop app for reading, searching, editing, and exporting large delimited-text files. CSV Reader uses Tauri 2 and Rust to keep multi-gigabyte files responsive without loading all file data into physical memory.
+A cross-platform desktop app for reading, searching, editing, and exporting large delimited-text files. CSV Reader uses a native egui window and Rust to keep multi-gigabyte files responsive without loading all file data into physical memory.
 
 ![CSV Reader main interface](screenshot-main.png)
 
@@ -24,7 +24,7 @@ Download platform packages from [GitHub Releases](https://github.com/fulracoco/c
 
 ### Windows
 
-Use the `x64` installer on most PCs and `arm64` on Windows ARM devices. The standard installer can download WebView2 when required; the much larger `with.WebView2` package contains the offline runtime.
+Use the `x64` installer on most PCs and `arm64` on Windows ARM devices. The native UI has no WebView2 runtime dependency.
 
 ### macOS
 
@@ -62,16 +62,14 @@ chmod +x CSV.Reader_*.AppImage
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18 or later
 - [Rust](https://www.rust-lang.org/tools/install) stable toolchain
-- Platform dependencies required by [Tauri 2](https://v2.tauri.app/start/prerequisites/)
+- Native window dependencies for the target platform (Linux builds use X11/Wayland development headers).
 
 On Ubuntu/Debian, install the dependencies used by CI:
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-  libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-  libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xz-utils
+sudo apt install libx11-dev libxi-dev libxrandr-dev libxcursor-dev \
+  libxinerama-dev libwayland-dev libxkbcommon-dev
 ```
 
 ### Run Locally
@@ -79,34 +77,25 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
 ```bash
 git clone https://github.com/fulracoco/csv_reader.git csv-reader
 cd csv-reader
-npm install
-npm run dev
+cargo run --manifest-path src-tauri/Cargo.toml
 ```
 
 ### Commands
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Start the Tauri development app |
-| `npm run build` | Build a release package for the current platform |
-| `npm run build:win` | Build Windows x64 |
-| `npm run build:mac-x64` | Build macOS Intel |
-| `npm run build:mac-arm64` | Build macOS Apple Silicon |
-| `npm run build:linux` | Build Linux x64 |
-| `npm version 0.1.14 --no-git-tag-version` | Update the single version source and sync npm/Cargo metadata |
-| `npm run version:check` | Verify that all version metadata is consistent |
+| `cargo run --manifest-path src-tauri/Cargo.toml` | Start the native egui development app |
+| `cargo build --manifest-path src-tauri/Cargo.toml --release` | Build an optimized native binary |
+| `cargo build --manifest-path src-tauri/Cargo.toml --release` then `cargo packager --manifest-path src-tauri/Cargo.toml --release` | Build and package the current platform |
+| Edit `version` in `src-tauri/Cargo.toml` | Update the single application version source |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | Compile and run Rust tests |
 
 ## Architecture
 
 | Path | Responsibility |
 |---|---|
-| `frontend/index.html` | Application layout and controls |
-| `frontend/styles.css` | Theme, table, panels, and responsive layout |
-| `frontend/renderer.js` | Virtual scrolling, interaction, search, editing, and export UI |
+| `src-tauri/src/app.rs` | Native egui UI, virtual grid, interaction, search, editing, and export |
 | `src-tauri/src/csv_engine.rs` | Memory mapping, indexing, parsing, caching, search, edit, and export |
-| `src-tauri/src/commands.rs` | Tauri IPC commands, dialogs, and localized application menus |
-| `src-tauri/src/lib.rs` | Application setup, plugins, state, and menu events |
 | `.github/workflows/build.yml` | Cross-platform builds and GitHub Release publishing |
 
 The file is memory-mapped, and a one-pass scan records each row's byte offset. Visible rows are parsed on demand and retained in a 500-row cache. Search scans rows in parallel without creating a persistent search index; the UI returns at most 500 matches.
