@@ -65,8 +65,13 @@ pub fn get_rows(
     engine: State<'_, Mutex<CsvEngine>>,
     start: u32,
     count: u32,
+    col_start: u32,
+    col_count: u32,
 ) -> Result<Vec<RowData>, String> {
-    engine.lock().unwrap().get_rows(start, count)
+    engine
+        .lock()
+        .unwrap()
+        .get_rows(start, count, col_start, col_count)
 }
 
 #[tauri::command]

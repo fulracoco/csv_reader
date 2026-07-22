@@ -114,9 +114,9 @@ The file is memory-mapped, and a one-pass scan records each row's byte offset. V
 ## Performance Notes
 
 - Tested with files larger than 2 GB and datasets containing 10 million rows.
-- Row offsets use roughly 8 bytes per row, so 10 million rows require about 80 MB for the index.
+- Row offsets use 4 bytes for files up to 4 GiB and 8 bytes for larger files, so 10 million rows require about 40 MB or 80 MB for the index.
 - Export streams rows to a UTF-8 CSV with a BOM and does not retain the full export in memory.
-- Editing rewrites the source file and temporarily holds its rows in memory. Back up important files and avoid editing very large datasets in place.
+- Editing streams a rewrite through a temporary file in the same directory and keeps only the target row in memory; replacement requires free disk space close to the source file size.
 - Indexing and search speed depend on storage, encoding, row width, and CPU resources.
 
 ## License

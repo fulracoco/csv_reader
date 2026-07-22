@@ -3,14 +3,16 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 const MAX_CELL_PREVIEW: usize = 500;
-const CACHE_MAX: usize = 500;
+const CACHE_MAX_ROWS: usize = 500;
+const CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ─── Public data types ───────────────────────────────────────────────────────
 
@@ -49,19 +51,83 @@ pub struct SearchProgress {
     pub total: u32,
 }
 
+#[derive(Debug)]
+enum RowOffsets {
+    U32(Vec<u32>),
+    U64(Vec<u64>),
+}
+
+impl RowOffsets {
+    fn empty() -> Self {
+        Self::U32(Vec::new())
+    }
+
+    fn with_capacity(file_size: usize, capacity: usize) -> Self {
+        if u32::try_from(file_size).is_ok() {
+            Self::U32(Vec::with_capacity(capacity))
+        } else {
+            Self::U64(Vec::with_capacity(capacity))
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::U32(offsets) => offsets.len(),
+            Self::U64(offsets) => offsets.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, index: usize) -> u64 {
+        match self {
+            Self::U32(offsets) => u64::from(offsets[index]),
+            Self::U64(offsets) => offsets[index],
+        }
+    }
+
+    fn push(&mut self, offset: u64) {
+        match self {
+            Self::U32(offsets) => offsets.push(offset as u32),
+            Self::U64(offsets) => offsets.push(offset),
+        }
+    }
+
+    fn pop(&mut self) {
+        match self {
+            Self::U32(offsets) => {
+                offsets.pop();
+            }
+            Self::U64(offsets) => {
+                offsets.pop();
+            }
+        }
+    }
+
+    fn last(&self) -> Option<u64> {
+        match self {
+            Self::U32(offsets) => offsets.last().copied().map(u64::from),
+            Self::U64(offsets) => offsets.last().copied(),
+        }
+    }
+}
+
 // ─── CsvEngine ───────────────────────────────────────────────────────────────
 
 pub struct CsvEngine {
     mmap: Option<Arc<Mmap>>,
     file_path: String,
     file_size: u64,
-    offsets: Arc<Vec<u64>>,
+    offsets: Arc<RowOffsets>,
     headers: Vec<String>,
     delimiter: u8,
     encoding: String,
     bom_offset: u64,
     cache: HashMap<u32, Vec<String>>,
     cache_order: Vec<u32>,
+    cache_bytes: usize,
 }
 
 impl CsvEngine {
@@ -70,13 +136,14 @@ impl CsvEngine {
             mmap: None,
             file_path: String::new(),
             file_size: 0,
-            offsets: Arc::new(Vec::new()),
+            offsets: Arc::new(RowOffsets::empty()),
             headers: Vec::new(),
             delimiter: b',',
             encoding: String::from("utf8"),
             bom_offset: 0,
-            cache: HashMap::with_capacity(CACHE_MAX),
-            cache_order: Vec::with_capacity(CACHE_MAX),
+            cache: HashMap::with_capacity(CACHE_MAX_ROWS),
+            cache_order: Vec::with_capacity(CACHE_MAX_ROWS),
+            cache_bytes: 0,
         }
     }
 
@@ -96,7 +163,7 @@ impl CsvEngine {
             self.mmap = Some(Arc::new(mmap));
             self.file_path = file_path.to_string();
             self.file_size = file_size;
-            self.offsets = Arc::new(Vec::new());
+            self.offsets = Arc::new(RowOffsets::empty());
             self.headers = Vec::new();
             self.delimiter = b',';
             self.encoding = encoding;
@@ -143,7 +210,13 @@ impl CsvEngine {
         })
     }
 
-    pub fn get_rows(&mut self, start_row: u32, count: u32) -> Result<Vec<RowData>, String> {
+    pub fn get_rows(
+        &mut self,
+        start_row: u32,
+        count: u32,
+        col_start: u32,
+        col_count: u32,
+    ) -> Result<Vec<RowData>, String> {
         let delimiter = self.delimiter as char;
 
         let mut results = Vec::with_capacity(count as usize);
@@ -160,12 +233,7 @@ impl CsvEngine {
 
                 if let Some(cached) = self.cache.get(&row_idx) {
                     cache_updates.push((row_idx, None));
-                    let cells: Vec<String> = cached
-                        .iter()
-                        .map(|c| truncate_cell(c, MAX_CELL_PREVIEW))
-                        .collect();
-                    let lengths: Vec<u32> = cached.iter().map(|c| c.len() as u32).collect();
-                    results.push(RowData { cells, lengths });
+                    results.push(row_data_for_columns(cached, col_start, col_count));
                 } else {
                     let text = read_row_text(
                         mmap,
@@ -175,13 +243,9 @@ impl CsvEngine {
                         &self.encoding,
                     );
                     let parsed = parse_csv_line(&text, delimiter);
-                    let cells: Vec<String> = parsed
-                        .iter()
-                        .map(|c| truncate_cell(c, MAX_CELL_PREVIEW))
-                        .collect();
-                    let lengths: Vec<u32> = parsed.iter().map(|c| c.len() as u32).collect();
+                    let row_data = row_data_for_columns(&parsed, col_start, col_count);
                     cache_updates.push((row_idx, Some(parsed)));
-                    results.push(RowData { cells, lengths });
+                    results.push(row_data);
                 }
             }
         }
@@ -280,59 +344,80 @@ impl CsvEngine {
             return Err("Row out of range".to_string());
         }
 
-        let row_count = self.offsets.len().saturating_sub(1);
-
-        let mut lines: Vec<String> = {
+        let (row_start, row_end, replacement, line_ending) = {
             let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
-            let mut lines = Vec::with_capacity(row_count + 1);
-            for i in 0..=row_count {
-                let text = read_row_text(mmap, &self.offsets, i, self.file_size, &self.encoding);
-                let text = text.trim_end_matches(['\r', '\n']).to_string();
-                lines.push(text);
+            let row_start = self.offsets.get(data_row) as usize;
+            let row_end = if data_row + 1 < self.offsets.len() {
+                self.offsets.get(data_row + 1) as usize
+            } else {
+                self.file_size as usize
+            };
+            let text = read_row_text(
+                mmap,
+                &self.offsets,
+                data_row,
+                self.file_size,
+                &self.encoding,
+            );
+            let mut parsed = parse_csv_line(&text, delimiter);
+            while parsed.len() <= col_index as usize {
+                parsed.push(String::new());
             }
-            lines
+            parsed[col_index as usize] = new_content.to_string();
+            let replacement = format_csv_row(&parsed, delimiter);
+            let ending_len = line_ending_len(&mmap[row_start..row_end], &self.encoding);
+            let line_ending = mmap[row_end - ending_len..row_end].to_vec();
+            (row_start, row_end, replacement, line_ending)
         };
 
-        let mut parsed = parse_csv_line(&lines[data_row], delimiter);
-        while parsed.len() <= col_index as usize {
-            parsed.push(String::new());
+        let source_path = PathBuf::from(&self.file_path);
+        let permissions = fs::metadata(&source_path)
+            .map_err(|e| format!("Cannot read file metadata: {e}"))?
+            .permissions();
+        let (temp_path, temp_file) = create_temp_file(&source_path)?;
+        let write_result = (|| -> Result<(), String> {
+            let mmap = self.mmap.as_deref().ok_or("No file open".to_string())?;
+            let mut writer = BufWriter::new(temp_file);
+            writer
+                .write_all(&mmap[..row_start])
+                .map_err(|e| format!("Write error: {e}"))?;
+            write_encoded(&mut writer, &replacement, &self.encoding)
+                .map_err(|e| format!("Write error: {e}"))?;
+            writer
+                .write_all(&line_ending)
+                .map_err(|e| format!("Write error: {e}"))?;
+            writer
+                .write_all(&mmap[row_end..])
+                .map_err(|e| format!("Write error: {e}"))?;
+            writer.flush().map_err(|e| format!("Flush error: {e}"))?;
+            writer
+                .get_ref()
+                .sync_all()
+                .map_err(|e| format!("Sync error: {e}"))?;
+            Ok(())
+        })();
+
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
         }
-        parsed[col_index as usize] = new_content.to_string();
-        lines[data_row] = format_csv_row(&parsed, delimiter);
 
+        if let Err(error) = fs::set_permissions(&temp_path, permissions) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!("Cannot preserve file permissions: {error}"));
+        }
         self.mmap = None;
-
-        {
-            let mut file = BufWriter::new(
-                File::create(&self.file_path).map_err(|e| format!("Cannot write file: {}", e))?,
-            );
-
-            if self.encoding == "utf16le" {
-                file.write_all(&[0xFF, 0xFE])
-                    .map_err(|e| format!("Write error: {}", e))?;
-            } else {
-                file.write_all(&[0xEF, 0xBB, 0xBF])
-                    .map_err(|e| format!("Write error: {}", e))?;
-            }
-
-            for (i, line) in lines.iter().enumerate() {
-                if i == self.offsets.len() - 1 && line.is_empty() {
-                    continue;
+        if let Err(error) = replace_file(&source_path, &temp_path) {
+            let _ = fs::remove_file(&temp_path);
+            let reopen_error = self.reopen().err();
+            return Err(match reopen_error {
+                Some(reopen_error) => {
+                    format!(
+                        "Cannot replace source file: {error}; cannot reopen source: {reopen_error}"
+                    )
                 }
-                if self.encoding == "utf16le" {
-                    let encoded: Vec<u8> =
-                        line.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-                    file.write_all(&encoded)
-                        .map_err(|e| format!("Write error: {}", e))?;
-                    file.write_all(&[0x0A, 0x00])
-                        .map_err(|e| format!("Write error: {}", e))?;
-                } else {
-                    file.write_all(line.as_bytes())
-                        .map_err(|e| format!("Write error: {}", e))?;
-                    file.write_all(b"\n")
-                        .map_err(|e| format!("Write error: {}", e))?;
-                }
-            }
+                None => format!("Cannot replace source file: {error}"),
+            });
         }
 
         self.reopen()?;
@@ -361,7 +446,7 @@ impl CsvEngine {
             .iter()
             .map(|&i| {
                 let h = self.headers.get(i as usize).cloned().unwrap_or_default();
-                csv_quote_value(&h)
+                csv_quote_value(&h, ',')
             })
             .collect();
         file.write_all(header_line.join(",").as_bytes())
@@ -386,7 +471,7 @@ impl CsvEngine {
                 .iter()
                 .map(|&i| {
                     let val = parsed.get(i as usize).cloned().unwrap_or_default();
-                    csv_quote_value(&val)
+                    csv_quote_value(&val, ',')
                 })
                 .collect();
             file.write_all(line.join(",").as_bytes())
@@ -404,7 +489,8 @@ impl CsvEngine {
         self.mmap = None;
         self.cache.clear();
         self.cache_order.clear();
-        self.offsets = Arc::new(Vec::new());
+        self.cache_bytes = 0;
+        self.offsets = Arc::new(RowOffsets::empty());
         self.headers.clear();
         self.file_path.clear();
         self.file_size = 0;
@@ -472,9 +558,9 @@ impl CsvEngine {
                     return None;
                 }
 
-                let start = offsets[i] as usize;
+                let start = offsets.get(i) as usize;
                 let end = if i + 1 < offsets.len() {
-                    offsets[i + 1] as usize
+                    offsets.get(i + 1) as usize
                 } else {
                     file_size as usize
                 };
@@ -587,15 +673,21 @@ impl CsvEngine {
     }
 
     fn add_to_cache(&mut self, key: u32, data: Vec<String>) {
-        self.cache.insert(key, data);
+        let data_size = cache_entry_size(&data);
+        if let Some(previous) = self.cache.insert(key, data) {
+            self.cache_bytes = self.cache_bytes.saturating_sub(cache_entry_size(&previous));
+        }
+        self.cache_bytes = self.cache_bytes.saturating_add(data_size);
         if let Some(pos) = self.cache_order.iter().position(|&k| k == key) {
             self.cache_order.remove(pos);
         }
         self.cache_order.push(key);
-        while self.cache_order.len() > CACHE_MAX {
+        while self.cache_order.len() > CACHE_MAX_ROWS || self.cache_bytes > CACHE_MAX_BYTES {
             if let Some(oldest) = self.cache_order.first().copied() {
                 self.cache_order.remove(0);
-                self.cache.remove(&oldest);
+                if let Some(removed) = self.cache.remove(&oldest) {
+                    self.cache_bytes = self.cache_bytes.saturating_sub(cache_entry_size(&removed));
+                }
             }
         }
     }
@@ -603,6 +695,7 @@ impl CsvEngine {
     fn reopen(&mut self) -> Result<(), String> {
         self.cache.clear();
         self.cache_order.clear();
+        self.cache_bytes = 0;
 
         let file = File::open(&self.file_path).map_err(|e| format!("Cannot reopen file: {}", e))?;
 
@@ -623,6 +716,151 @@ impl Default for CsvEngine {
 }
 
 // ─── Utility functions ───────────────────────────────────────────────────────
+
+fn cache_entry_size(cells: &[String]) -> usize {
+    std::mem::size_of::<Vec<String>>()
+        + std::mem::size_of_val(cells)
+        + cells.iter().map(|cell| cell.capacity()).sum::<usize>()
+}
+
+fn row_data_for_columns(cells: &[String], col_start: u32, col_count: u32) -> RowData {
+    let start = (col_start as usize).min(cells.len());
+    let end = start.saturating_add(col_count as usize).min(cells.len());
+    let visible = &cells[start..end];
+    RowData {
+        cells: visible
+            .iter()
+            .map(|cell| truncate_cell(cell, MAX_CELL_PREVIEW))
+            .collect(),
+        lengths: visible.iter().map(|cell| cell.len() as u32).collect(),
+    }
+}
+
+fn create_temp_file(source_path: &Path) -> Result<(PathBuf, File), String> {
+    let parent = source_path
+        .parent()
+        .ok_or_else(|| "Source file has no parent directory".to_string())?;
+    let file_name = source_path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+
+    for _ in 0..100 {
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!(
+            ".{file_name}.csv-reader-{}-{counter}.tmp",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Cannot create temporary file: {error}")),
+        }
+    }
+
+    Err("Cannot create a unique temporary file".to_string())
+}
+
+fn write_encoded(writer: &mut impl Write, text: &str, encoding: &str) -> std::io::Result<()> {
+    match encoding {
+        "utf16le" => {
+            for unit in text.encode_utf16() {
+                writer.write_all(&unit.to_le_bytes())?;
+            }
+        }
+        "utf16be" => {
+            for unit in text.encode_utf16() {
+                writer.write_all(&unit.to_be_bytes())?;
+            }
+        }
+        _ => writer.write_all(text.as_bytes())?,
+    }
+    Ok(())
+}
+
+fn line_ending_len(row_bytes: &[u8], encoding: &str) -> usize {
+    match encoding {
+        "utf16le" => {
+            if row_bytes.ends_with(&[0x0D, 0x00, 0x0A, 0x00]) {
+                4
+            } else if row_bytes.ends_with(&[0x0A, 0x00]) || row_bytes.ends_with(&[0x0D, 0x00]) {
+                2
+            } else {
+                0
+            }
+        }
+        "utf16be" => {
+            if row_bytes.ends_with(&[0x00, 0x0D, 0x00, 0x0A]) {
+                4
+            } else if row_bytes.ends_with(&[0x00, 0x0A]) || row_bytes.ends_with(&[0x00, 0x0D]) {
+                2
+            } else {
+                0
+            }
+        }
+        _ => {
+            if row_bytes.ends_with(b"\r\n") {
+                2
+            } else if row_bytes.ends_with(b"\n") || row_bytes.ends_with(b"\r") {
+                1
+            } else {
+                0
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source_path: &Path, temp_path: &Path) -> std::io::Result<()> {
+    fs::rename(temp_path, source_path)
+}
+
+#[cfg(windows)]
+fn replace_file(source_path: &Path, temp_path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    let source: Vec<u16> = source_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let replacement: Vec<u16> = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let result = unsafe {
+        ReplaceFileW(
+            source.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
 
 fn truncate_cell(text: &str, max_len: usize) -> String {
     if text.len() > max_len {
@@ -728,9 +966,9 @@ fn detect_bom(data: &[u8]) -> (String, u64) {
     }
 }
 
-fn build_index(data: &[u8], bom_offset: u64, encoding: &str) -> Vec<u64> {
+fn build_index(data: &[u8], bom_offset: u64, encoding: &str) -> RowOffsets {
     let file_size = data.len();
-    let mut offsets: Vec<u64> = Vec::with_capacity(65536);
+    let mut offsets = RowOffsets::with_capacity(file_size, 65536);
     offsets.push(bom_offset);
 
     let bom = bom_offset as usize;
@@ -744,14 +982,18 @@ fn build_index(data: &[u8], bom_offset: u64, encoding: &str) -> Vec<u64> {
         _ => build_index_utf8(data, bom, &mut offsets, file_size),
     }
 
-    while offsets.len() > 1 && offsets[offsets.len() - 1] >= file_size as u64 {
+    while offsets.len() > 1
+        && offsets
+            .last()
+            .is_some_and(|offset| offset >= file_size as u64)
+    {
         offsets.pop();
     }
 
     offsets
 }
 
-fn build_index_utf8(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size: usize) {
+fn build_index_utf8(data: &[u8], start: usize, offsets: &mut RowOffsets, file_size: usize) {
     let mut in_quotes = false;
     let mut pos = start;
 
@@ -788,8 +1030,9 @@ fn build_index_utf8(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size
     }
 }
 
-fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size: usize) {
+fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut RowOffsets, file_size: usize) {
     let mut pos = start;
+    let mut in_quotes = false;
     if !pos.is_multiple_of(2) && pos + 1 < file_size {
         pos += 1;
     }
@@ -798,12 +1041,18 @@ fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_s
         let lo = data[pos];
         let hi = data[pos + 1];
 
-        if lo == 0x0A && hi == 0x00 {
+        if lo == 0x22 && hi == 0x00 {
+            if in_quotes && pos + 3 < file_size && data[pos + 2] == 0x22 && data[pos + 3] == 0x00 {
+                pos += 2;
+            } else {
+                in_quotes = !in_quotes;
+            }
+        } else if lo == 0x0A && hi == 0x00 && !in_quotes {
             let offset = (pos + 2) as u64;
             if offset < file_size as u64 {
                 offsets.push(offset);
             }
-        } else if lo == 0x0D && hi == 0x00 {
+        } else if lo == 0x0D && hi == 0x00 && !in_quotes {
             if pos + 3 < file_size && data[pos + 2] == 0x0A && data[pos + 3] == 0x00 {
                 pos += 2;
                 let offset = (pos + 2) as u64;
@@ -822,8 +1071,9 @@ fn build_index_utf16le(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_s
     }
 }
 
-fn build_index_utf16be(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_size: usize) {
+fn build_index_utf16be(data: &[u8], start: usize, offsets: &mut RowOffsets, file_size: usize) {
     let mut pos = start;
+    let mut in_quotes = false;
     if !pos.is_multiple_of(2) && pos + 1 < file_size {
         pos += 1;
     }
@@ -832,12 +1082,18 @@ fn build_index_utf16be(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_s
         let hi = data[pos];
         let lo = data[pos + 1];
 
-        if hi == 0x00 && lo == 0x0A {
+        if hi == 0x00 && lo == 0x22 {
+            if in_quotes && pos + 3 < file_size && data[pos + 2] == 0x00 && data[pos + 3] == 0x22 {
+                pos += 2;
+            } else {
+                in_quotes = !in_quotes;
+            }
+        } else if hi == 0x00 && lo == 0x0A && !in_quotes {
             let offset = (pos + 2) as u64;
             if offset < file_size as u64 {
                 offsets.push(offset);
             }
-        } else if hi == 0x00 && lo == 0x0D {
+        } else if hi == 0x00 && lo == 0x0D && !in_quotes {
             if pos + 3 < file_size && data[pos + 2] == 0x00 && data[pos + 3] == 0x0A {
                 pos += 2;
                 let offset = (pos + 2) as u64;
@@ -858,7 +1114,7 @@ fn build_index_utf16be(data: &[u8], start: usize, offsets: &mut Vec<u64>, file_s
 
 fn read_row_text(
     mmap: &Mmap,
-    offsets: &[u64],
+    offsets: &RowOffsets,
     row_index: usize,
     file_size: u64,
     encoding: &str,
@@ -867,9 +1123,9 @@ fn read_row_text(
         return String::new();
     }
 
-    let start = offsets[row_index] as usize;
+    let start = offsets.get(row_index) as usize;
     let end = if row_index + 1 < offsets.len() {
-        offsets[row_index + 1] as usize
+        offsets.get(row_index + 1) as usize
     } else {
         file_size as usize
     };
@@ -967,8 +1223,8 @@ fn detect_delimiter(text: &str) -> char {
     }
 }
 
-fn csv_quote_value(val: &str) -> String {
-    if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
+fn csv_quote_value(val: &str, delimiter: char) -> String {
+    if val.contains(delimiter) || val.contains('"') || val.contains('\n') || val.contains('\r') {
         format!("\"{}\"", val.replace('"', "\"\""))
     } else {
         val.to_string()
@@ -978,7 +1234,7 @@ fn csv_quote_value(val: &str) -> String {
 fn format_csv_row(cells: &[String], delimiter: char) -> String {
     cells
         .iter()
-        .map(|c| csv_quote_value(c))
+        .map(|c| csv_quote_value(c, delimiter))
         .collect::<Vec<_>>()
         .join(&delimiter.to_string())
 }
@@ -989,6 +1245,33 @@ mod tests {
     use rayon::ThreadPoolBuilder;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "csv-reader-{label}-{}-{unique}.csv",
+            std::process::id()
+        ))
+    }
+
+    fn utf16_fixture(text: &str, little_endian: bool) -> Vec<u8> {
+        let mut bytes = if little_endian {
+            vec![0xFF, 0xFE]
+        } else {
+            vec![0xFE, 0xFF]
+        };
+        for unit in text.encode_utf16() {
+            bytes.extend(if little_endian {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            });
+        }
+        bytes
+    }
 
     #[test]
     fn parses_quoted_delimiter_and_escaped_quote() {
@@ -1002,6 +1285,45 @@ mod tests {
     fn detects_delimiter_outside_quotes() {
         assert_eq!(detect_delimiter("name;\"notes,with,commas\";value"), ';');
         assert_eq!(detect_delimiter("plain text"), ',');
+    }
+
+    #[test]
+    fn uses_compact_offsets_for_files_up_to_four_gibibytes() {
+        let offsets = build_index(b"header\none\ntwo\n", 0, "utf8");
+        assert!(matches!(offsets, RowOffsets::U32(_)));
+        assert_eq!(offsets.get(2), 11);
+
+        if usize::BITS > 32 {
+            let offsets = RowOffsets::with_capacity(u32::MAX as usize + 1, 0);
+            assert!(matches!(offsets, RowOffsets::U64(_)));
+        }
+    }
+
+    #[test]
+    fn cache_respects_row_and_byte_budgets() {
+        let mut engine = CsvEngine::new();
+        for key in 0..CACHE_MAX_ROWS as u32 + 10 {
+            engine.add_to_cache(key, vec![String::new()]);
+        }
+        assert_eq!(engine.cache.len(), CACHE_MAX_ROWS);
+        assert!(engine.cache_bytes <= CACHE_MAX_BYTES);
+
+        engine.add_to_cache(u32::MAX, vec!["x".repeat(CACHE_MAX_BYTES)]);
+        assert!(engine.cache_bytes <= CACHE_MAX_BYTES);
+        assert!(!engine.cache.contains_key(&u32::MAX));
+    }
+
+    #[test]
+    fn row_data_contains_only_requested_columns() {
+        let cells = vec![
+            "zero".to_string(),
+            "one".to_string(),
+            "two".to_string(),
+            "three".to_string(),
+        ];
+        let row = row_data_for_columns(&cells, 1, 2);
+        assert_eq!(row.cells, ["one", "two"]);
+        assert_eq!(row.lengths, [3, 3]);
     }
 
     #[test]
@@ -1022,14 +1344,7 @@ mod tests {
 
     #[test]
     fn filtered_search_counts_only_matching_column() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "csv-reader-search-{}-{unique}.csv",
-            std::process::id()
-        ));
+        let path = temp_path("search");
         fs::write(&path, "target,other\nnone,needle\nneedle,value\n")
             .expect("fixture should be writable");
 
@@ -1050,5 +1365,96 @@ mod tests {
 
         engine.close();
         fs::remove_file(path).expect("fixture should be removable");
+    }
+
+    #[test]
+    fn update_cell_streams_utf8_and_preserves_line_endings() {
+        let path = temp_path("update-utf8");
+        fs::write(&path, b"first,second\r\none,two\r\nthree,four")
+            .expect("fixture should be writable");
+
+        let mut engine = CsvEngine::new();
+        engine
+            .open(path.to_str().expect("temporary path should be valid UTF-8"))
+            .expect("fixture should open");
+        engine
+            .update_cell(0, 1, "new,value")
+            .expect("cell update should succeed");
+        engine.close();
+
+        assert_eq!(
+            fs::read(&path).expect("fixture should be readable"),
+            b"first,second\r\none,\"new,value\"\r\nthree,four"
+        );
+        fs::remove_file(path).expect("fixture should be removable");
+    }
+
+    #[test]
+    fn update_cell_preserves_utf16_endianness_and_bom() {
+        for little_endian in [true, false] {
+            let label = if little_endian { "utf16le" } else { "utf16be" };
+            let path = temp_path(label);
+            fs::write(
+                &path,
+                utf16_fixture("first,second\r\n一,二\r\n三,四", little_endian),
+            )
+            .expect("fixture should be writable");
+
+            let mut engine = CsvEngine::new();
+            engine
+                .open(path.to_str().expect("temporary path should be valid UTF-8"))
+                .expect("fixture should open");
+            engine
+                .update_cell(0, 1, "新,值")
+                .expect("cell update should succeed");
+            engine.close();
+
+            assert_eq!(
+                fs::read(&path).expect("fixture should be readable"),
+                utf16_fixture("first,second\r\n一,\"新,值\"\r\n三,四", little_endian)
+            );
+            fs::remove_file(path).expect("fixture should be removable");
+        }
+    }
+
+    #[test]
+    fn utf16_index_ignores_newlines_inside_quotes() {
+        for (little_endian, encoding) in [(true, "utf16le"), (false, "utf16be")] {
+            let bytes = utf16_fixture(
+                "first,second\r\n\"multi\r\nline\",value\r\nlast,row",
+                little_endian,
+            );
+            let offsets = build_index(&bytes, 2, encoding);
+            assert_eq!(offsets.len(), 3);
+            assert_eq!(
+                parse_csv_line(&decode_row_bytes(&bytes, &offsets, 1, encoding), ',',),
+                ["multi\r\nline", "value"]
+            );
+        }
+    }
+
+    fn decode_row_bytes(
+        bytes: &[u8],
+        offsets: &RowOffsets,
+        row_index: usize,
+        encoding: &str,
+    ) -> String {
+        let start = offsets.get(row_index) as usize;
+        let end = if row_index + 1 < offsets.len() {
+            offsets.get(row_index + 1) as usize
+        } else {
+            bytes.len()
+        };
+        let units: Vec<u16> = bytes[start..end]
+            .chunks_exact(2)
+            .map(|chunk| {
+                if encoding == "utf16le" {
+                    u16::from_le_bytes([chunk[0], chunk[1]])
+                } else {
+                    u16::from_be_bytes([chunk[0], chunk[1]])
+                }
+            })
+            .collect();
+        String::from_utf16(&units).expect("fixture should contain valid UTF-16")
     }
 }

@@ -42,6 +42,10 @@ if (cargoResult.status !== 0) {
   process.exit(cargoResult.status || 1);
 }
 
+const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
+const updatedCargoLock = replaceCargoLockVersion(cargoLock, version);
+fs.writeFileSync(cargoLockPath, updatedCargoLock);
+
 verifyVersions(version);
 console.log(`Synchronized version metadata to ${version}`);
 
@@ -54,7 +58,21 @@ function replacePackageVersion(content, nextVersion, filePath) {
   if (!packageSection.test(content)) {
     fail(`Package version not found in ${filePath}`);
   }
-  return content.replace(packageSection, `$1${nextVersion}$2`);
+  return content.replace(
+    packageSection,
+    (_, prefix, suffix) => `${prefix}${nextVersion}${suffix}`,
+  );
+}
+
+function replaceCargoLockVersion(content, nextVersion) {
+  const packageEntry = /(^\[\[package\]\]\s*\r?\nname\s*=\s*"csv-reader"\s*\r?\nversion\s*=\s*")[^"]+("\s*$)/m;
+  if (!packageEntry.test(content)) {
+    fail(`Package version not found in ${cargoLockPath}`);
+  }
+  return content.replace(
+    packageEntry,
+    (_, prefix, suffix) => `${prefix}${nextVersion}${suffix}`,
+  );
 }
 
 function readCargoVersion(content, filePath, packageBlockPattern) {

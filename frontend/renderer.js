@@ -17,7 +17,8 @@ async function listen(event, callback) {
 
 const api = {
   openFile: () => invoke('open_file'),
-  getRows: (start, count) => invoke('get_rows', { start, count }),
+  getRows: (start, count, colStart, colCount) =>
+    invoke('get_rows', { start, count, colStart, colCount }),
   getRowsByIndex: (indices) => invoke('get_rows_by_index', { indices }),
   getCellContent: (row, col) => invoke('get_cell_content', { row, col }),
   updateCell: (row, col, content) => invoke('update_cell', { row, col, content }),
@@ -66,15 +67,20 @@ const searchCloseBtn = document.getElementById('btn-search-close');
 // ─── State ─────────────────────────────────────────────────────────────────
 
 const MIN_COL_WIDTH = 120;
+const MAX_SCROLL_HEIGHT = 16000000;
 
 let fileInfo = null;
 let rowHeight = 40;
 let colWidth = MIN_COL_WIDTH;
 let totalWidth = 0;
+let logicalScrollHeight = 0;
+let scrollScale = 1;
 let rowElements = [];
 let elementPool = [];
 let visibleStart = 0;
 let visibleEnd = 0;
+let visibleColStart = 0;
+let visibleColEnd = 0;
 let selectedCell = null;
 let isEditing = false;
 let editingCell = null;
@@ -82,7 +88,8 @@ let originalContent = '';
 let scrollRAF = null;
 let resizeRAF = null;
 
-let selectedRows = new Set();
+let selectedRowRange = null;
+let selectedRowToggles = new Set();
 let selectedCols = new Set();
 let searchInProgress = false;
 let lastClickedRow = -1;
@@ -118,8 +125,6 @@ window.addEventListener('resize', () => {
   if (!fileInfo || resizeRAF) return;
   resizeRAF = requestAnimationFrame(() => {
     resizeRAF = null;
-    calcColumnWidth();
-    buildHeader();
     setupVirtualScroll();
     scheduleRender();
   });
@@ -223,7 +228,7 @@ rowsContainer.addEventListener('dblclick', (e) => {
 tableHeader.addEventListener('click', (e) => {
   const headerCell = e.target.closest('.header-cell:not(.row-num)');
   if (!headerCell) return;
-  const colIndex = Array.from(tableHeader.children).indexOf(headerCell) - 1;
+  const colIndex = parseInt(headerCell.dataset.colIndex);
   if (colIndex < 0) return;
   handleColClick(colIndex, e.ctrlKey || e.metaKey, e.shiftKey);
 });
@@ -232,15 +237,15 @@ function handleRowClick(rowIndex, ctrl, shift) {
   if (shift && lastClickedRow >= 0) {
     const from = Math.min(lastClickedRow, rowIndex);
     const to = Math.max(lastClickedRow, rowIndex);
-    selectedRows.clear();
-    for (let i = from; i <= to; i++) selectedRows.add(i);
+    selectedRowRange = { from, to };
+    selectedRowToggles.clear();
   } else if (ctrl) {
-    if (selectedRows.has(rowIndex)) selectedRows.delete(rowIndex);
-    else selectedRows.add(rowIndex);
+    if (selectedRowToggles.has(rowIndex)) selectedRowToggles.delete(rowIndex);
+    else selectedRowToggles.add(rowIndex);
     lastClickedRow = rowIndex;
   } else {
-    selectedRows.clear();
-    selectedRows.add(rowIndex);
+    selectedRowRange = { from: rowIndex, to: rowIndex };
+    selectedRowToggles.clear();
     lastClickedRow = rowIndex;
   }
   selectedCols.clear();
@@ -263,13 +268,13 @@ function handleColClick(colIndex, ctrl, shift) {
     selectedCols.add(colIndex);
     lastClickedCol = colIndex;
   }
-  selectedRows.clear();
+  clearRowSelection();
   lastClickedRow = -1;
   updateSelectionUI();
 }
 
 function clearSelection() {
-  selectedRows.clear();
+  clearRowSelection();
   selectedCols.clear();
   lastClickedRow = -1;
   lastClickedCol = -1;
@@ -280,20 +285,65 @@ function updateSelectionUI() {
   for (const rowEl of rowElements) {
     const ri = parseInt(rowEl.dataset.rowIndex);
     if (isNaN(ri)) continue;
-    rowEl.classList.toggle('selected', selectedRows.has(ri));
-    for (let j = 1; j < rowEl.children.length; j++) {
-      rowEl.children[j].classList.toggle('col-selected', selectedCols.has(j - 1));
+    rowEl.classList.toggle('selected', isRowSelected(ri));
+    for (const cell of rowEl.querySelectorAll('.table-cell')) {
+      const colIndex = parseInt(cell.dataset.colIndex);
+      cell.classList.toggle('col-selected', selectedCols.has(colIndex));
     }
   }
-  for (let j = 1; j < tableHeader.children.length; j++) {
-    tableHeader.children[j].classList.toggle('selected', selectedCols.has(j - 1));
+  for (const cell of tableHeader.querySelectorAll('.header-cell[data-col-index]')) {
+    const colIndex = parseInt(cell.dataset.colIndex);
+    cell.classList.toggle('selected', selectedCols.has(colIndex));
   }
-  if (selectedRows.size > 0 || selectedCols.size > 0) {
+  const rowCount = selectedRowCount();
+  if (rowCount > 0 || selectedCols.size > 0) {
     const parts = [];
-    if (selectedRows.size > 0) parts.push(selectedRows.size + ' row' + (selectedRows.size > 1 ? 's' : ''));
+    if (rowCount > 0) parts.push(rowCount + ' row' + (rowCount > 1 ? 's' : ''));
     if (selectedCols.size > 0) parts.push(selectedCols.size + ' col' + (selectedCols.size > 1 ? 's' : ''));
     statusText.textContent = parts.join(', ') + ' selected';
   }
+}
+
+function clearRowSelection() {
+  selectedRowRange = null;
+  selectedRowToggles.clear();
+}
+
+function isRowInRange(rowIndex) {
+  return selectedRowRange !== null &&
+    rowIndex >= selectedRowRange.from && rowIndex <= selectedRowRange.to;
+}
+
+function isRowSelected(rowIndex) {
+  return isRowInRange(rowIndex) !== selectedRowToggles.has(rowIndex);
+}
+
+function selectedRowCount() {
+  let count = selectedRowRange
+    ? selectedRowRange.to - selectedRowRange.from + 1
+    : 0;
+  for (const rowIndex of selectedRowToggles) {
+    count += isRowInRange(rowIndex) ? -1 : 1;
+  }
+  return count;
+}
+
+function selectedRowBounds() {
+  if (selectedRowCount() === 0) return null;
+
+  let from = selectedRowRange ? selectedRowRange.from : Number.POSITIVE_INFINITY;
+  let to = selectedRowRange ? selectedRowRange.to : Number.NEGATIVE_INFINITY;
+  if (selectedRowRange) {
+    while (from <= to && selectedRowToggles.has(from)) from++;
+    while (to >= from && selectedRowToggles.has(to)) to--;
+  }
+  for (const rowIndex of selectedRowToggles) {
+    if (!isRowInRange(rowIndex)) {
+      from = Math.min(from, rowIndex);
+      to = Math.max(to, rowIndex);
+    }
+  }
+  return { from, to };
 }
 
 // ─── File Open ─────────────────────────────────────────────────────────────
@@ -321,9 +371,8 @@ async function openFile() {
     fileStatsEl.title = fileStatsEl.textContent;
     statusText.textContent = `Loaded ${info.row_count.toLocaleString()} rows, ${info.column_count} columns`;
 
-    calcColumnWidth();
-    buildHeader();
     populateSearchColumns();
+    scrollContainer.scrollLeft = 0;
     setupVirtualScroll();
     scrollContainer.scrollTop = 0;
     requestAnimationFrame(() => scheduleRender());
@@ -355,16 +404,66 @@ function formatBytes(bytes) {
 // ─── Header ────────────────────────────────────────────────────────────────
 
 function buildHeader() {
-  tableHeader.innerHTML = '<div class="header-cell row-num">#</div>';
-  for (const h of fileInfo.headers) {
+  tableHeader.replaceChildren();
+  const rowNumber = document.createElement('div');
+  rowNumber.className = 'header-cell row-num';
+  rowNumber.textContent = '#';
+  tableHeader.appendChild(rowNumber);
+  tableHeader.appendChild(createColumnSpacer(visibleColStart * colWidth));
+
+  for (let colIndex = visibleColStart; colIndex < visibleColEnd; colIndex++) {
+    const header = fileInfo.headers[colIndex] || '';
     const cell = document.createElement('div');
     cell.className = 'header-cell';
     cell.style.width = colWidth + 'px';
     cell.style.minWidth = colWidth + 'px';
-    cell.textContent = h || '(empty)';
-    cell.title = h || '(empty)';
+    cell.dataset.colIndex = colIndex;
+    cell.textContent = header || '(empty)';
+    cell.title = header || '(empty)';
+    cell.classList.toggle('selected', selectedCols.has(colIndex));
     tableHeader.appendChild(cell);
   }
+  tableHeader.appendChild(
+    createColumnSpacer((fileInfo.column_count - visibleColEnd) * colWidth),
+  );
+}
+
+function createColumnSpacer(width) {
+  const spacer = document.createElement('div');
+  spacer.className = 'column-spacer';
+  spacer.style.flex = `0 0 ${Math.max(0, width)}px`;
+  return spacer;
+}
+
+function calculateColumnWindow() {
+  const dataLeft = Math.max(0, scrollContainer.scrollLeft - 64);
+  const dataRight = Math.max(
+    0,
+    scrollContainer.scrollLeft + scrollContainer.clientWidth - 64,
+  );
+  const buffer = 2;
+  return {
+    start: Math.max(0, Math.floor(dataLeft / colWidth) - buffer),
+    end: Math.min(
+      fileInfo.column_count,
+      Math.ceil(dataRight / colWidth) + buffer,
+    ),
+  };
+}
+
+function updateColumnWindow(force = false) {
+  if (!fileInfo) return false;
+  const next = calculateColumnWindow();
+  if (!force && next.start === visibleColStart && next.end === visibleColEnd) {
+    return false;
+  }
+  visibleColStart = next.start;
+  visibleColEnd = next.end;
+  visibleStart = -1;
+  visibleEnd = -1;
+  buildHeader();
+  rebuildRowPool();
+  return true;
 }
 
 // ─── Virtual Scrolling Setup ───────────────────────────────────────────────
@@ -378,17 +477,28 @@ function calcColumnWidth() {
 }
 
 function setupVirtualScroll() {
+  renderSeq++;
   calcColumnWidth();
 
-  const totalHeight = fileInfo.row_count * rowHeight;
-  scrollInner.style.height = totalHeight + 'px';
+  logicalScrollHeight = fileInfo.row_count * rowHeight;
+  const physicalHeight = Math.min(logicalScrollHeight, MAX_SCROLL_HEIGHT);
+  const viewportHeight = scrollContainer.clientHeight;
+  const logicalScrollable = Math.max(0, logicalScrollHeight - viewportHeight);
+  const physicalScrollable = Math.max(0, physicalHeight - viewportHeight);
+  scrollScale = physicalScrollable > 0
+    ? logicalScrollable / physicalScrollable
+    : 1;
+  scrollInner.style.height = physicalHeight + 'px';
   scrollInner.style.width = totalWidth + 'px';
 
   tableHeader.style.width = totalWidth + 'px';
 
   visibleStart = -1;
   visibleEnd = -1;
+  updateColumnWindow(true);
+}
 
+function rebuildRowPool() {
   const viewportHeight = scrollContainer.clientHeight;
   const visibleCount = Math.ceil(viewportHeight / rowHeight);
   const bufferedCount = visibleCount + 20;
@@ -397,33 +507,10 @@ function setupVirtualScroll() {
     el.remove();
   }
   rowElements = [];
-
-  for (const row of elementPool) {
-    row.style.width = totalWidth + 'px';
-    for (let i = 1; i < row.children.length; i++) {
-      row.children[i].style.width = colWidth + 'px';
-      row.children[i].style.minWidth = colWidth + 'px';
-    }
-  }
+  elementPool = [];
 
   while (elementPool.length < bufferedCount) {
-    const row = document.createElement('div');
-    row.className = 'table-row';
-    row.style.width = totalWidth + 'px';
-
-    const numCell = document.createElement('div');
-    numCell.className = 'row-num';
-    row.appendChild(numCell);
-
-    for (let i = 0; i < fileInfo.column_count; i++) {
-      const cell = document.createElement('div');
-      cell.className = 'table-cell';
-      cell.style.width = colWidth + 'px';
-      cell.style.minWidth = colWidth + 'px';
-      row.appendChild(cell);
-    }
-
-    elementPool.push(row);
+    elementPool.push(createRowElement());
   }
 
   for (let i = 0; i < bufferedCount; i++) {
@@ -446,13 +533,15 @@ let renderActive = false;
 let needsRender = false;
 
 function onScroll() {
-  if (renderActive) {
-    needsRender = true;
-    return;
-  }
   if (scrollRAF) return;
   scrollRAF = requestAnimationFrame(() => {
     scrollRAF = null;
+    if (updateColumnWindow()) renderSeq++;
+    if (renderActive) {
+      renderSeq++;
+      needsRender = true;
+      return;
+    }
     scheduleRender();
   });
 }
@@ -479,14 +568,27 @@ function scheduleRender() {
 async function renderVisibleRows(seq) {
   if (!fileInfo) return;
 
-  const scrollTop = scrollContainer.scrollTop;
+  const physicalScrollTop = scrollContainer.scrollTop;
   const viewportHeight = scrollContainer.clientHeight;
+  const maxLogicalScroll = Math.max(0, logicalScrollHeight - viewportHeight);
+  const logicalScrollTop = Math.min(maxLogicalScroll, physicalScrollTop * scrollScale);
+  const firstVisibleRow = Math.floor(logicalScrollTop / rowHeight);
+  const logicalRowOffset = logicalScrollTop - firstVisibleRow * rowHeight;
+  const firstRowTop = physicalScrollTop - logicalRowOffset;
 
-  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 10);
-  const end = Math.min(fileInfo.row_count, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 10);
+  const start = Math.max(0, firstVisibleRow - 10);
+  const end = Math.min(
+    fileInfo.row_count,
+    Math.ceil((logicalScrollTop + viewportHeight) / rowHeight) + 10,
+  );
   const count = end - start;
+  const colStart = visibleColStart;
+  const colCount = visibleColEnd - visibleColStart;
 
-  if (start === visibleStart && end === visibleEnd) return;
+  if (start === visibleStart && end === visibleEnd) {
+    positionVisibleRows(firstVisibleRow, firstRowTop);
+    return;
+  }
 
   while (rowElements.length < count) {
     const row = elementPool.length > rowElements.length
@@ -504,7 +606,7 @@ async function renderVisibleRows(seq) {
 
   let rows;
   try {
-    rows = await api.getRows(start, count);
+    rows = await api.getRows(start, count, colStart, colCount);
   } catch (err) {
     console.error('Failed to get rows:', err);
     statusText.textContent = 'Error loading rows';
@@ -521,17 +623,18 @@ async function renderVisibleRows(seq) {
     const lengths = rowData.lengths;
 
     rowEl.style.display = 'flex';
-    rowEl.style.top = (rowIndex * rowHeight) + 'px';
+    rowEl.style.top = (firstRowTop + (rowIndex - firstVisibleRow) * rowHeight) + 'px';
     rowEl.style.height = rowHeight + 'px';
     rowEl.style.width = totalWidth + 'px';
     rowEl.dataset.rowIndex = rowIndex;
-    rowEl.classList.toggle('selected', selectedRows.has(rowIndex));
+    rowEl.classList.toggle('selected', isRowSelected(rowIndex));
 
     const numCell = rowEl.children[0];
     numCell.textContent = (rowIndex + 1).toLocaleString();
 
-    for (let j = 0; j < fileInfo.column_count; j++) {
-      const cell = rowEl.children[j + 1];
+    for (let j = 0; j < colCount; j++) {
+      const colIndex = colStart + j;
+      const cell = rowEl.children[j + 2];
       if (!cell) break;
       cell.style.width = colWidth + 'px';
       cell.style.minWidth = colWidth + 'px';
@@ -539,9 +642,9 @@ async function renderVisibleRows(seq) {
       const origLen = lengths[j] || text.length;
       cell.textContent = text;
       cell.dataset.fullLength = origLen;
-      cell.dataset.colIndex = j;
+      cell.dataset.colIndex = colIndex;
       cell.dataset.rowIndex = rowIndex;
-      cell.classList.toggle('col-selected', selectedCols.has(j));
+      cell.classList.toggle('col-selected', selectedCols.has(colIndex));
       cell.title = origLen > 500 ? 'Click to view full content (' + formatBytes(origLen) + ')' : '';
 
       if (origLen > 500) {
@@ -551,9 +654,6 @@ async function renderVisibleRows(seq) {
       }
     }
 
-    for (let j = fileInfo.column_count + 1; j < rowEl.children.length; j++) {
-      rowEl.children[j].textContent = '';
-    }
   }
 
   visibleStart = start;
@@ -561,6 +661,15 @@ async function renderVisibleRows(seq) {
 
   if (rows.length === 0 && count > 0) {
     statusText.textContent = 'No data returned for rows ' + (start + 1) + '-' + (end);
+  }
+}
+
+function positionVisibleRows(firstVisibleRow, firstRowTop) {
+  for (const rowEl of rowElements) {
+    const rowIndex = parseInt(rowEl.dataset.rowIndex);
+    if (!isNaN(rowIndex)) {
+      rowEl.style.top = (firstRowTop + (rowIndex - firstVisibleRow) * rowHeight) + 'px';
+    }
   }
 }
 
@@ -573,14 +682,19 @@ function createRowElement() {
   numCell.className = 'row-num';
   row.appendChild(numCell);
 
-  const colCount = fileInfo ? fileInfo.column_count : 1;
-  for (let i = 0; i < colCount; i++) {
+  row.appendChild(createColumnSpacer(visibleColStart * colWidth));
+
+  for (let colIndex = visibleColStart; colIndex < visibleColEnd; colIndex++) {
     const cell = document.createElement('div');
     cell.className = 'table-cell';
     cell.style.width = colWidth + 'px';
     cell.style.minWidth = colWidth + 'px';
+    cell.dataset.colIndex = colIndex;
     row.appendChild(cell);
   }
+  row.appendChild(
+    createColumnSpacer((fileInfo.column_count - visibleColEnd) * colWidth),
+  );
 
   return row;
 }
@@ -713,13 +827,14 @@ function openExportDialog() {
   if (!fileInfo) return;
 
   exportColumns.innerHTML = '';
-  const selCols = selectedCols.size > 0 ? selectedCols : new Set([...Array(fileInfo.column_count).keys()]);
+  const useAllColumns = selectedCols.size === 0;
   for (let i = 0; i < fileInfo.column_count; i++) {
     const label = document.createElement('label');
-    label.className = 'export-col-checkbox' + (selCols.has(i) ? ' checked' : '');
+    const checked = useAllColumns || selectedCols.has(i);
+    label.className = 'export-col-checkbox' + (checked ? ' checked' : '');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = selCols.has(i);
+    cb.checked = checked;
     cb.addEventListener('change', () => label.classList.toggle('checked', cb.checked));
     label.appendChild(cb);
     label.appendChild(document.createTextNode(fileInfo.headers[i] || '(col ' + (i + 1) + ')'));
@@ -728,10 +843,10 @@ function openExportDialog() {
 
   exportRowFrom.max = fileInfo.row_count;
   exportRowTo.max = fileInfo.row_count;
-  if (selectedRows.size > 0) {
-    const sorted = [...selectedRows].sort((a, b) => a - b);
-    exportRowFrom.value = sorted[0] + 1;
-    exportRowTo.value = sorted[sorted.length - 1] + 1;
+  const selectedBounds = selectedRowBounds();
+  if (selectedBounds) {
+    exportRowFrom.value = selectedBounds.from + 1;
+    exportRowTo.value = selectedBounds.to + 1;
   } else {
     exportRowFrom.value = 1;
     exportRowTo.value = fileInfo.row_count;
@@ -744,10 +859,9 @@ function openExportDialog() {
       if (btn.dataset.preset === 'all') {
         exportRowFrom.value = 1;
         exportRowTo.value = fileInfo.row_count;
-      } else if (btn.dataset.preset === 'selected' && selectedRows.size > 0) {
-        const sorted = [...selectedRows].sort((a, b) => a - b);
-        exportRowFrom.value = sorted[0] + 1;
-        exportRowTo.value = sorted[sorted.length - 1] + 1;
+      } else if (btn.dataset.preset === 'selected' && selectedBounds) {
+        exportRowFrom.value = selectedBounds.from + 1;
+        exportRowTo.value = selectedBounds.to + 1;
       }
     };
   });
@@ -911,8 +1025,10 @@ function hideSearchResults() {
 
 function navigateToRow(rowIndex) {
   if (!fileInfo) return;
-  const targetScrollTop = rowIndex * rowHeight;
-  scrollContainer.scrollTop = targetScrollTop;
+  const viewportHeight = scrollContainer.clientHeight;
+  const maxLogicalScroll = Math.max(0, logicalScrollHeight - viewportHeight);
+  const logicalTarget = Math.min(rowIndex * rowHeight, maxLogicalScroll);
+  scrollContainer.scrollTop = scrollScale > 0 ? logicalTarget / scrollScale : 0;
   hideSearchResults();
 }
 

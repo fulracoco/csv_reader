@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "csv-reader"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "memchr",
  "memmap2",
