@@ -14,7 +14,7 @@ A cross-platform desktop app for reading, searching, editing, and exporting larg
 - Full-cell detail view with capped table previews for large values
 - Row and column selection, cell editing, and continuous-range export
 - Automatic delimiter detection for comma, tab, semicolon, and pipe
-- UTF-8 and BOM-marked UTF-16 LE/BE input support
+- Automatic encoding detection for UTF-8, UTF-16 LE/BE, GBK/GB18030, Big5, Japanese/Korean encodings, and common legacy single-byte encodings
 
 ![CSV Reader search results](screenshot-search.png)
 
@@ -77,25 +77,26 @@ sudo apt install libx11-dev libxi-dev libxrandr-dev libxcursor-dev \
 ```bash
 git clone https://github.com/fulracoco/csv_reader.git csv-reader
 cd csv-reader
-cargo run --manifest-path src-tauri/Cargo.toml
+cargo run
 ```
 
 ### Commands
 
 | Command | Purpose |
 |---|---|
-| `cargo run --manifest-path src-tauri/Cargo.toml` | Start the native egui development app |
-| `cargo build --manifest-path src-tauri/Cargo.toml --release` | Build an optimized native binary |
-| `cargo build --manifest-path src-tauri/Cargo.toml --release` then `cargo packager --manifest-path src-tauri/Cargo.toml --release` | Build and package the current platform |
-| Edit `version` in `src-tauri/Cargo.toml` | Update the single application version source |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | Compile and run Rust tests |
+| `cargo run` | Start the native egui development app |
+| `cargo build --release` | Build an optimized native binary |
+| `cargo build --release` then `cargo packager --release` | Build and package the current platform |
+| Edit `version` in `Cargo.toml` | Update the single application version source |
+| `cargo test` | Compile and run Rust tests |
 
 ## Architecture
 
 | Path | Responsibility |
 |---|---|
-| `src-tauri/src/app.rs` | Native egui UI, virtual grid, interaction, search, editing, and export |
-| `src-tauri/src/csv_engine.rs` | Memory mapping, indexing, parsing, caching, search, edit, and export |
+| `src/app.rs` | Native egui UI, virtual grid, interaction, search, editing, and export |
+| `src/csv_engine.rs` | Memory mapping, indexing, parsing, caching, search, edit, and export |
+| `icons/` | Desktop and platform application icons |
 | `.github/workflows/build.yml` | Cross-platform builds and GitHub Release publishing |
 
 The file is memory-mapped, and a one-pass scan records each row's byte offset. Visible rows are parsed on demand and retained in a 500-row cache. Search scans rows in parallel without creating a persistent search index; the UI returns at most 500 matches.

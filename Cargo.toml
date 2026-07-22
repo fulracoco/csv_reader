@@ -1,10 +1,12 @@
 [package]
 name = "csv-reader"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 
 [dependencies]
-eframe = { version = "0.35.0", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+eframe = { version = "0.35.0", default-features = false, features = ["glow", "default_fonts", "persistence", "x11", "wayland"] }
+chardetng = "1"
+encoding_rs = "0.8"
 rfd = "0.17.2"
 memmap2 = "0.9"
 memchr = "2"

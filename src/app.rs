@@ -1,7 +1,8 @@
 use crate::csv_engine::{CsvEngine, OpenResult, RowData, SearchProgress, SearchResult};
 use eframe::egui::{
-    self, Align, Color32, Context, CornerRadius, CursorIcon, FontId, Key, Layout, Margin, Pos2,
-    Rect, RichText, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2,
+    self, Align, Color32, Context, CornerRadius, CursorIcon, FontData, FontDefinitions, FontFamily,
+    FontId, Key, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, TextEdit, TextStyle, Ui,
+    Vec2,
 };
 use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +18,7 @@ const MAX_MANUAL_COL_WIDTH: f32 = 1_200.0;
 const MAX_PHYSICAL_EXTENT: f64 = 12_000_000.0;
 const MAX_VISIBLE_ROWS: u32 = 180;
 const MAX_VISIBLE_COLS: u32 = 80;
+const MIN_PREFETCH_ROWS: u32 = 24;
 const APP_BG: Color32 = Color32::from_rgb(13, 17, 18);
 const PANEL_BG: Color32 = Color32::from_rgb(20, 25, 27);
 const SURFACE_BG: Color32 = Color32::from_rgb(25, 31, 33);
@@ -27,15 +29,50 @@ const TEXT_PRIMARY: Color32 = Color32::from_rgb(232, 238, 235);
 const TEXT_SECONDARY: Color32 = Color32::from_rgb(164, 177, 172);
 const TEXT_MUTED: Color32 = Color32::from_rgb(112, 126, 121);
 const ACCENT: Color32 = Color32::from_rgb(70, 196, 137);
-const ACCENT_HOVER: Color32 = Color32::from_rgb(88, 211, 154);
-const ACCENT_DARK: Color32 = Color32::from_rgb(26, 74, 55);
 const WARNING: Color32 = Color32::from_rgb(232, 175, 93);
 const DANGER: Color32 = Color32::from_rgb(235, 116, 116);
+const SETTINGS_LANGUAGE_KEY: &str = "language";
+const SETTINGS_ACCENT_KEY: &str = "accent_color";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Language {
+    English,
+    Chinese,
+}
+
+impl Language {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "en" => Some(Self::English),
+            "zh-CN" => Some(Self::Chinese),
+            _ => None,
+        }
+    }
+
+    fn storage_value(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Chinese => "zh-CN",
+        }
+    }
+
+    fn text(self, english: &'static str, chinese: &'static str) -> &'static str {
+        match self {
+            Self::English => english,
+            Self::Chinese => chinese,
+        }
+    }
+
+    fn is_chinese(self) -> bool {
+        self == Self::Chinese
+    }
+}
 
 pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("CSV Reader")
+            .with_decorations(false)
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([900.0, 500.0]),
         ..Default::default()
@@ -171,6 +208,8 @@ struct ExportState {
 }
 
 struct CsvApp {
+    language: Language,
+    accent_color: Color32,
     engine: Arc<Mutex<CsvEngine>>,
     tx: mpsc::Sender<WorkerMessage>,
     rx: mpsc::Receiver<WorkerMessage>,
@@ -203,9 +242,24 @@ struct CsvApp {
 
 impl CsvApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_style(&cc.egui_ctx);
+        configure_fonts(&cc.egui_ctx);
+        let language = cc
+            .storage
+            .and_then(|storage| storage.get_string(SETTINGS_LANGUAGE_KEY))
+            .as_deref()
+            .and_then(Language::parse)
+            .unwrap_or(Language::English);
+        let accent_color = cc
+            .storage
+            .and_then(|storage| storage.get_string(SETTINGS_ACCENT_KEY))
+            .as_deref()
+            .and_then(parse_color)
+            .unwrap_or(ACCENT);
+        configure_style(&cc.egui_ctx, accent_color);
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
+            language,
+            accent_color,
             engine: Arc::new(Mutex::new(CsvEngine::new())),
             tx,
             rx,
@@ -241,8 +295,26 @@ impl CsvApp {
         app
     }
 
+    fn accent_hover(&self) -> Color32 {
+        mix_color(self.accent_color, Color32::WHITE, 0.14)
+    }
+
+    fn accent_dark(&self) -> Color32 {
+        mix_color(APP_BG, self.accent_color, 0.34)
+    }
+
+    fn apply_accent(&mut self, color: Color32, ctx: &Context) {
+        self.accent_color = Color32::from_rgb(color.r(), color.g(), color.b());
+        configure_style(ctx, self.accent_color);
+        ctx.request_repaint();
+    }
+
     fn spawn_open(&mut self, path: String, ctx: &Context) {
-        self.busy = Some(format!("Opening {}...", Path::new(&path).display()));
+        self.busy = Some(if self.language.is_chinese() {
+            format!("正在打开 {}...", Path::new(&path).display())
+        } else {
+            format!("Opening {}...", Path::new(&path).display())
+        });
         self.error = None;
         let engine = Arc::clone(&self.engine);
         let tx = self.tx.clone();
@@ -262,7 +334,10 @@ impl CsvApp {
             return;
         }
         if let Some(path) = FileDialog::new()
-            .add_filter("CSV files", &["csv", "tsv", "txt"])
+            .add_filter(
+                self.language.text("CSV files", "CSV 文件"),
+                &["csv", "tsv", "txt"],
+            )
             .pick_file()
         {
             self.spawn_open(path.to_string_lossy().into_owned(), ctx);
@@ -297,15 +372,22 @@ impl CsvApp {
                     }
                 },
                 WorkerMessage::SearchProgress(progress) => {
-                    self.search_status =
-                        format!("Searching... {} / {}", progress.done, progress.total);
+                    self.search_status = if self.language.is_chinese() {
+                        format!("正在搜索... {} / {}", progress.done, progress.total)
+                    } else {
+                        format!("Searching... {} / {}", progress.done, progress.total)
+                    };
                     ctx.request_repaint();
                 }
                 WorkerMessage::Search(result) => {
                     self.busy = None;
                     match result {
                         Ok(results) => {
-                            self.search_status = format!("{} result(s)", results.len());
+                            self.search_status = if self.language.is_chinese() {
+                                format!("{} 条结果", results.len())
+                            } else {
+                                format!("{} result(s)", results.len())
+                            };
                             self.search_results = results;
                         }
                         Err(error) => self.error = Some(error),
@@ -352,9 +434,16 @@ impl CsvApp {
         if query.is_empty() || self.busy.is_some() {
             return;
         }
-        self.busy = Some("Searching...".to_string());
+        self.busy = Some(
+            self.language
+                .text("Searching...", "正在搜索...")
+                .to_string(),
+        );
         self.search_results.clear();
-        self.search_status = "Searching...".to_string();
+        self.search_status = self
+            .language
+            .text("Searching...", "正在搜索...")
+            .to_string();
         let engine = Arc::clone(&self.engine);
         let tx = self.tx.clone();
         let repaint = ctx.clone();
@@ -411,7 +500,7 @@ impl CsvApp {
         let engine = Arc::clone(&self.engine);
         let tx = self.tx.clone();
         let repaint = ctx.clone();
-        self.busy = Some("Saving...".to_string());
+        self.busy = Some(self.language.text("Saving...", "正在保存...").to_string());
         thread::spawn(move || {
             let result = engine
                 .lock()
@@ -467,19 +556,28 @@ impl CsvApp {
             .map(|v| v - 1);
         if columns.is_empty() {
             if let Some(state) = &mut self.export {
-                state.error = "Select at least one column.".to_string();
+                state.error = self
+                    .language
+                    .text("Select at least one column.", "请至少选择一列。")
+                    .to_string();
             }
             return;
         }
         let (Some(from), Some(to)) = (from, to) else {
             if let Some(state) = &mut self.export {
-                state.error = "Enter a valid row range.".to_string();
+                state.error = self
+                    .language
+                    .text("Enter a valid row range.", "请输入有效的行范围。")
+                    .to_string();
             }
             return;
         };
         if from > to || to >= info.row_count {
             if let Some(state) = &mut self.export {
-                state.error = "Row range is outside the file.".to_string();
+                state.error = self
+                    .language
+                    .text("Row range is outside the file.", "行范围超出文件内容。")
+                    .to_string();
             }
             return;
         }
@@ -489,12 +587,16 @@ impl CsvApp {
             .unwrap_or_else(|| "export.csv".to_string());
         let Some(path) = FileDialog::new()
             .set_file_name(default_name)
-            .add_filter("CSV files", &["csv"])
+            .add_filter(self.language.text("CSV files", "CSV 文件"), &["csv"])
             .save_file()
         else {
             return;
         };
-        self.busy = Some("Exporting...".to_string());
+        self.busy = Some(
+            self.language
+                .text("Exporting...", "正在导出...")
+                .to_string(),
+        );
         let engine = Arc::clone(&self.engine);
         let tx = self.tx.clone();
         let repaint = ctx.clone();
@@ -532,19 +634,25 @@ impl CsvApp {
         let viewport_height = available.y.max(100.0);
         let logical_width = f64::from(ROW_HEADER_WIDTH) + data_width;
         let logical_height = HEADER_HEIGHT as f64 + info.row_count as f64 * self.row_height as f64;
+        let max_logical_x = (logical_width - viewport_width as f64).max(0.0);
+        let max_physical_x = (physical_width - viewport_width).max(0.0) as f64;
+        let max_logical_y = (logical_height - data_height as f64).max(0.0);
+        let max_physical_y = (physical_height - viewport_height).max(0.0) as f64;
         let jump = self.jump_to_row.take();
 
         let mut scroll_area = egui::ScrollArea::both()
             .id_salt("csv-grid")
+            .wheel_scroll_multiplier(Vec2::new(
+                wheel_scroll_scale(max_logical_x, max_physical_x),
+                wheel_scroll_scale(max_logical_y, max_physical_y),
+            ))
             .auto_shrink([false, false]);
         if let Some(row) = jump {
-            let max_logical = (logical_height - data_height as f64).max(0.0);
             let target = (HEADER_HEIGHT as f64 + row as f64 * self.row_height as f64
                 - data_height as f64 * 0.35)
-                .clamp(0.0, max_logical);
-            let max_physical = (physical_height as f64 - viewport_height as f64).max(0.0);
-            let y = if max_logical > 0.0 {
-                target / max_logical * max_physical
+                .clamp(0.0, max_logical_y);
+            let y = if max_logical_y > 0.0 {
+                target / max_logical_y * max_physical_y
             } else {
                 0.0
             };
@@ -553,15 +661,11 @@ impl CsvApp {
         scroll_area.show_viewport(ui, |ui, viewport| {
             let (content_rect, _) =
                 ui.allocate_exact_size(Vec2::new(physical_width, physical_height), Sense::hover());
-            let max_logical_x = (logical_width - viewport_width as f64).max(0.0);
-            let max_physical_x = (physical_width - viewport_width).max(0.0) as f64;
             let logical_scroll_x = if max_physical_x > 0.0 {
                 viewport.min.x as f64 / max_physical_x * max_logical_x
             } else {
                 0.0
             };
-            let max_logical_y = (logical_height - data_height as f64).max(0.0);
-            let max_physical_y = (physical_height - viewport_height).max(0.0) as f64;
             let logical_scroll_y = if max_physical_y > 0.0 {
                 viewport.min.y as f64 / max_physical_y * max_logical_y
             } else {
@@ -585,8 +689,7 @@ impl CsvApp {
             let last_col = column_offsets
                 .partition_point(|offset| *offset < data_scroll + data_view_width)
                 .min(info.column_count as usize) as u32;
-            let row_start = first_row.saturating_sub(5).min(info.row_count);
-            let row_end = last_row.saturating_add(5).min(info.row_count);
+            let (row_start, row_end) = prefetched_row_range(first_row, last_row, info.row_count);
             let col_start = first_col.saturating_sub(2).min(info.column_count);
             let col_end = last_col.saturating_add(2).min(info.column_count);
             let widths_changed = self.load_rows(
@@ -698,27 +801,49 @@ impl CsvApp {
         if count == 0 || col_count == 0 || self.busy.as_deref() == Some("Opening") {
             return false;
         }
-        let key = (
-            start,
-            start.saturating_add(count),
-            col_start,
-            col_start.saturating_add(col_count),
-        );
         let end = start.saturating_add(count);
-        let view_is_cached = (start..end).all(|row| self.rows.contains_key(&row));
-        if self.last_view == Some(key) && view_is_cached {
+        let col_end = col_start.saturating_add(col_count);
+        let columns_changed = self
+            .last_view
+            .is_none_or(|(_, _, previous_start, previous_end)| {
+                previous_start != col_start || previous_end != col_end
+            });
+        if columns_changed {
+            self.rows.clear();
+        }
+
+        let mut missing_ranges = Vec::new();
+        let mut missing_start = None;
+        for row in start..end {
+            if self.rows.contains_key(&row) {
+                if let Some(range_start) = missing_start.take() {
+                    missing_ranges.push((range_start, row));
+                }
+            } else if missing_start.is_none() {
+                missing_start = Some(row);
+            }
+        }
+        if let Some(range_start) = missing_start {
+            missing_ranges.push((range_start, end));
+        }
+        if missing_ranges.is_empty() {
             return false;
         }
+
         let Ok(mut engine) = self.engine.try_lock() else {
             return false;
         };
         let mut widths_changed = false;
-        if let Ok(data) = engine.get_rows(
-            start,
-            count.min(MAX_VISIBLE_ROWS),
-            col_start,
-            col_count.min(MAX_VISIBLE_COLS),
-        ) {
+        for (range_start, range_end) in missing_ranges {
+            let range_count = range_end.saturating_sub(range_start);
+            let Ok(data) = engine.get_rows(
+                range_start,
+                range_count.min(MAX_VISIBLE_ROWS),
+                col_start,
+                col_count.min(MAX_VISIBLE_COLS),
+            ) else {
+                continue;
+            };
             for (offset, row) in data.into_iter().enumerate() {
                 for (cell_offset, cell) in row.cells.iter().enumerate() {
                     let col = col_start as usize + cell_offset;
@@ -730,20 +855,20 @@ impl CsvApp {
                         }
                     }
                 }
-                self.rows.insert(start + offset as u32, row);
+                self.rows.insert(range_start + offset as u32, row);
             }
-            while self.rows.len() > 256 {
-                let center = start.saturating_add(count / 2);
-                if let Some(key) = self
-                    .rows
-                    .keys()
-                    .max_by_key(|row| row.abs_diff(center))
-                    .copied()
-                {
-                    self.rows.remove(&key);
-                } else {
-                    break;
-                }
+        }
+        while self.rows.len() > 256 {
+            let center = start.saturating_add(count / 2);
+            if let Some(key) = self
+                .rows
+                .keys()
+                .max_by_key(|row| row.abs_diff(center))
+                .copied()
+            {
+                self.rows.remove(&key);
+            } else {
+                break;
             }
         }
         self.column_layout_dirty |= widths_changed;
@@ -807,7 +932,7 @@ impl CsvApp {
                 rect,
                 0.0,
                 if selected {
-                    ACCENT_DARK
+                    self.accent_dark()
                 } else if response.hovered() {
                     SURFACE_BG
                 } else {
@@ -827,13 +952,13 @@ impl CsvApp {
                         rect.right_bottom(),
                     ),
                     0.0,
-                    ACCENT,
+                    self.accent_color,
                 );
             }
             if resize_response.hovered() || resize_response.dragged() {
                 painter.line_segment(
                     [rect.right_top(), rect.right_bottom()],
-                    Stroke::new(2.0, ACCENT_HOVER),
+                    Stroke::new(2.0, self.accent_hover()),
                 );
             }
             painter.with_clip_rect(rect.shrink(8.0)).text(
@@ -903,7 +1028,7 @@ impl CsvApp {
             row_rect,
             0.0,
             if selected {
-                ACCENT_DARK
+                self.accent_dark()
             } else if row_response.hovered() {
                 RAISED_BG
             } else if row.is_multiple_of(2) {
@@ -925,7 +1050,7 @@ impl CsvApp {
                     Pos2::new(row_rect.left() + 3.0, row_rect.bottom()),
                 ),
                 0.0,
-                ACCENT,
+                self.accent_color,
             );
         }
         painter.text(
@@ -954,11 +1079,11 @@ impl CsvApp {
             let response =
                 ui.interact(cell_rect, egui::Id::new(("cell", row, col)), Sense::click());
             let bg = if is_selected {
-                ACCENT_DARK
+                self.accent_dark()
             } else if selected {
-                Color32::from_rgb(22, 53, 41)
+                mix_color(TABLE_BG, self.accent_color, 0.22)
             } else if column_selected {
-                Color32::from_rgb(18, 37, 31)
+                mix_color(TABLE_BG, self.accent_color, 0.13)
             } else if response.hovered() {
                 RAISED_BG
             } else if row.is_multiple_of(2) {
@@ -972,7 +1097,11 @@ impl CsvApp {
                 0.0,
                 Stroke::new(
                     if is_selected { 2.0 } else { 1.0 },
-                    if is_selected { ACCENT } else { GRID_LINE },
+                    if is_selected {
+                        self.accent_color
+                    } else {
+                        GRID_LINE
+                    },
                 ),
                 egui::StrokeKind::Inside,
             );
@@ -1005,36 +1134,38 @@ impl CsvApp {
     }
 
     fn toolbar(&mut self, ui: &mut Ui, ctx: &Context) {
+        let language = self.language;
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("CSV READER")
-                    .size(12.0)
-                    .strong()
-                    .color(ACCENT),
-            );
-            ui.add_space(8.0);
-            if primary_button(ui, "Open").clicked() {
+            if primary_button(ui, language.text("Open", "打开"), self.accent_color).clicked() {
                 self.choose_open(ctx);
             }
             if let Some(info) = self.info.clone() {
-                if ui.button("Export").clicked() {
+                if ui.button(language.text("Export", "导出")).clicked() {
                     self.open_export();
                 }
                 ui.separator();
                 egui::ComboBox::from_id_salt("density")
-                    .selected_text(format!("{} px rows", self.row_height as u32))
+                    .selected_text(if language.is_chinese() {
+                        format!("行高 {} px", self.row_height as u32)
+                    } else {
+                        format!("{} px rows", self.row_height as u32)
+                    })
                     .show_ui(ui, |ui| {
-                        for (label, height) in [
-                            ("Compact", 24.0),
-                            ("Comfortable", 32.0),
-                            ("Relaxed", 44.0),
-                            ("Spacious", 60.0),
+                        for (english, chinese, height) in [
+                            ("Compact", "紧凑", 24.0),
+                            ("Comfortable", "舒适", 32.0),
+                            ("Relaxed", "宽松", 44.0),
+                            ("Spacious", "大间距", 60.0),
                         ] {
                             if ui
                                 .selectable_label(
                                     self.row_height == height,
-                                    format!("{} ({} px)", label, height as u32),
+                                    format!(
+                                        "{} ({} px)",
+                                        language.text(english, chinese),
+                                        height as u32
+                                    ),
                                 )
                                 .clicked()
                             {
@@ -1042,24 +1173,37 @@ impl CsvApp {
                             }
                         }
                     });
-                if ui.button("Auto width").clicked() {
+                if ui.button(language.text("Auto width", "自动列宽")).clicked() {
                     self.reset_column_widths();
                 }
                 ui.separator();
                 ui.label(
-                    RichText::new(format!(
-                        "{} rows  |  {} columns  |  {}",
-                        info.row_count,
-                        info.column_count,
-                        format_bytes(info.file_size)
-                    ))
+                    RichText::new(if language.is_chinese() {
+                        format!(
+                            "{} 行  |  {} 列  |  {}  |  {}",
+                            info.row_count,
+                            info.column_count,
+                            format_bytes(info.file_size),
+                            info.encoding
+                        )
+                    } else {
+                        format!(
+                            "{} rows  |  {} columns  |  {}  |  {}",
+                            info.row_count,
+                            info.column_count,
+                            format_bytes(info.file_size),
+                            info.encoding
+                        )
+                    })
                     .color(TEXT_MUTED),
                 );
                 ui.separator();
                 ui.add(egui::Label::new(RichText::new(&info.file_name).strong()).truncate())
                     .on_hover_text(&info.file_path);
             } else {
-                ui.label(RichText::new("No file open").color(TEXT_MUTED));
+                ui.label(
+                    RichText::new(language.text("No file open", "未打开文件")).color(TEXT_MUTED),
+                );
             }
         });
 
@@ -1069,10 +1213,12 @@ impl CsvApp {
                 let search = ui.add(
                     TextEdit::singleline(&mut self.search_query)
                         .desired_width(280.0)
-                        .hint_text("Search values"),
+                        .hint_text(language.text("Search values", "搜索内容")),
                 );
                 let enter_pressed = search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if primary_button(ui, "Find").clicked() || enter_pressed {
+                if primary_button(ui, language.text("Find", "查找"), self.accent_color).clicked()
+                    || enter_pressed
+                {
                     self.start_search(ctx);
                     self.show_search = true;
                 }
@@ -1081,12 +1227,15 @@ impl CsvApp {
                     .selected_text(
                         self.search_column
                             .map(|col| info.headers.get(col as usize).cloned().unwrap_or_default())
-                            .unwrap_or_else(|| "All columns".to_string()),
+                            .unwrap_or_else(|| language.text("All columns", "所有列").to_string()),
                     )
                     .truncate()
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(self.search_column.is_none(), "All columns")
+                            .selectable_label(
+                                self.search_column.is_none(),
+                                language.text("All columns", "所有列"),
+                            )
                             .clicked()
                         {
                             self.search_column = None;
@@ -1100,7 +1249,10 @@ impl CsvApp {
                             }
                         }
                     });
-                ui.checkbox(&mut self.search_case_sensitive, "Case sensitive");
+                ui.checkbox(
+                    &mut self.search_case_sensitive,
+                    language.text("Case sensitive", "区分大小写"),
+                );
                 if !self.search_status.is_empty() {
                     ui.label(RichText::new(&self.search_status).color(TEXT_MUTED));
                 }
@@ -1109,10 +1261,192 @@ impl CsvApp {
         ui.add_space(3.0);
     }
 
+    fn title_bar(&mut self, ui: &mut Ui, ctx: &Context) {
+        let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+        ui.horizontal(|ui| {
+            let title = ui.add(
+                egui::Label::new(
+                    RichText::new("CSV Reader")
+                        .strong()
+                        .color(self.accent_color),
+                )
+                .sense(Sense::click_and_drag()),
+            );
+            let drag_width = (ui.available_width() - 220.0).max(12.0);
+            let drag = ui.allocate_response(Vec2::new(drag_width, 26.0), Sense::click_and_drag());
+            let drag_response = title.union(drag);
+            if drag_response.double_clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            } else if drag_response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if title_bar_control(ui, "×", Color32::from_rgb(190, 55, 55)).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                let maximize_symbol = if maximized { "❐" } else { "□" };
+                if title_bar_control(ui, maximize_symbol, RAISED_BG).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+                if title_bar_control(ui, "—", RAISED_BG).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                ui.separator();
+                self.settings_menu(ui, ctx);
+            });
+        });
+    }
+
+    fn window_resize_handles(&self, ui: &mut Ui, ctx: &Context) {
+        if ctx.input(|input| input.viewport().maximized.unwrap_or(false)) {
+            return;
+        }
+        let rect = ui.max_rect();
+        let edge = 5.0;
+        let corner = 10.0;
+        let handles = [
+            (
+                Rect::from_min_max(
+                    rect.min,
+                    Pos2::new(rect.min.x + corner, rect.min.y + corner),
+                ),
+                egui::ResizeDirection::NorthWest,
+                CursorIcon::ResizeNwSe,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - corner, rect.min.y),
+                    Pos2::new(rect.max.x, rect.min.y + corner),
+                ),
+                egui::ResizeDirection::NorthEast,
+                CursorIcon::ResizeNeSw,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x, rect.max.y - corner),
+                    Pos2::new(rect.min.x + corner, rect.max.y),
+                ),
+                egui::ResizeDirection::SouthWest,
+                CursorIcon::ResizeNeSw,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - corner, rect.max.y - corner),
+                    rect.max,
+                ),
+                egui::ResizeDirection::SouthEast,
+                CursorIcon::ResizeNwSe,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x + corner, rect.min.y),
+                    Pos2::new(rect.max.x - corner, rect.min.y + edge),
+                ),
+                egui::ResizeDirection::North,
+                CursorIcon::ResizeVertical,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x + corner, rect.max.y - edge),
+                    Pos2::new(rect.max.x - corner, rect.max.y),
+                ),
+                egui::ResizeDirection::South,
+                CursorIcon::ResizeVertical,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x, rect.min.y + corner),
+                    Pos2::new(rect.min.x + edge, rect.max.y - corner),
+                ),
+                egui::ResizeDirection::West,
+                CursorIcon::ResizeHorizontal,
+            ),
+            (
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - edge, rect.min.y + corner),
+                    Pos2::new(rect.max.x, rect.max.y - corner),
+                ),
+                egui::ResizeDirection::East,
+                CursorIcon::ResizeHorizontal,
+            ),
+        ];
+        for (index, (handle, direction, cursor)) in handles.into_iter().enumerate() {
+            let response = ui
+                .interact(
+                    handle,
+                    egui::Id::new(("window-resize", index)),
+                    Sense::drag(),
+                )
+                .on_hover_cursor(cursor);
+            if response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+            }
+        }
+    }
+
+    fn settings_menu(&mut self, ui: &mut Ui, ctx: &Context) {
+        let language = self.language;
+        ui.menu_button(language.text("Settings", "设置"), |ui| {
+            ui.set_min_width(220.0);
+            ui.label(RichText::new(language.text("Language", "语言")).strong());
+            ui.selectable_value(&mut self.language, Language::English, "English");
+            ui.selectable_value(&mut self.language, Language::Chinese, "简体中文");
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(RichText::new(language.text("Accent color", "主题色")).strong());
+
+            let mut rgb = [
+                self.accent_color.r(),
+                self.accent_color.g(),
+                self.accent_color.b(),
+            ];
+            ui.horizontal(|ui| {
+                ui.label(language.text("Custom", "自定义"));
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    self.apply_accent(Color32::from_rgb(rgb[0], rgb[1], rgb[2]), ctx);
+                }
+                ui.monospace(color_to_hex(self.accent_color));
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                for (english, chinese, color) in [
+                    ("Green", "绿色", ACCENT),
+                    ("Blue", "蓝色", Color32::from_rgb(66, 153, 225)),
+                    ("Purple", "紫色", Color32::from_rgb(167, 139, 250)),
+                    ("Orange", "橙色", Color32::from_rgb(237, 137, 54)),
+                    ("Rose", "玫红", Color32::from_rgb(244, 114, 182)),
+                ] {
+                    let selected = self.accent_color == color;
+                    let response = ui.add(
+                        egui::Button::new(language.text(english, chinese))
+                            .fill(mix_color(SURFACE_BG, color, 0.32))
+                            .stroke(Stroke::new(
+                                if selected { 2.0 } else { 1.0 },
+                                if selected { color } else { GRID_LINE },
+                            )),
+                    );
+                    if response.clicked() {
+                        self.apply_accent(color, ctx);
+                    }
+                }
+            });
+            if ui
+                .button(language.text("Reset color", "恢复默认颜色"))
+                .clicked()
+            {
+                self.apply_accent(ACCENT, ctx);
+            }
+        });
+    }
+
     fn detail_panel(&mut self, ui: &mut Ui, ctx: &Context) {
         if !self.show_detail {
             return;
         }
+        let language = self.language;
+        let accent_color = self.accent_color;
         egui::Panel::right("detail-panel")
             .default_size(360.0)
             .min_size(280.0)
@@ -1120,11 +1454,13 @@ impl CsvApp {
             .frame(side_panel_frame())
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading(RichText::new("Cell content").size(16.0));
+                    ui.heading(
+                        RichText::new(language.text("Cell content", "单元格内容")).size(16.0),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .small_button("x")
-                            .on_hover_text("Close details")
+                            .on_hover_text(language.text("Close details", "关闭详情"))
                             .clicked()
                         {
                             self.show_detail = false;
@@ -1133,10 +1469,12 @@ impl CsvApp {
                     });
                 });
                 if let Some((row, col)) = self.selected_cell {
-                    ui.label(
-                        RichText::new(format!("Row {}  |  Column {}", row + 1, col + 1))
-                            .color(TEXT_MUTED),
-                    );
+                    let position = if language.is_chinese() {
+                        format!("第 {} 行  |  第 {} 列", row + 1, col + 1)
+                    } else {
+                        format!("Row {}  |  Column {}", row + 1, col + 1)
+                    };
+                    ui.label(RichText::new(position).color(TEXT_MUTED));
                 }
                 ui.add_space(8.0);
                 ui.separator();
@@ -1174,16 +1512,19 @@ impl CsvApp {
                 ui.add_space(10.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if self.editing {
-                        if primary_button(ui, "Save").clicked() {
+                        if primary_button(ui, language.text("Save", "保存"), accent_color).clicked()
+                        {
                             self.save_edit(ctx);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(language.text("Cancel", "取消")).clicked() {
                             self.editing = false;
                         }
-                    } else if primary_button(ui, "Edit").clicked() {
+                    } else if primary_button(ui, language.text("Edit", "编辑"), accent_color)
+                        .clicked()
+                    {
                         self.editing = true;
                     }
-                    if ui.button("Copy").clicked() {
+                    if ui.button(language.text("Copy", "复制")).clicked() {
                         ui.ctx().copy_text(self.detail_text.clone());
                     }
                 });
@@ -1194,6 +1535,7 @@ impl CsvApp {
         if !self.show_search {
             return;
         }
+        let language = self.language;
         let mut selected_match = None;
         egui::Panel::right("search-panel")
             .default_size(390.0)
@@ -1202,9 +1544,15 @@ impl CsvApp {
             .frame(side_panel_frame())
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading(RichText::new("Search results").size(16.0));
+                    ui.heading(
+                        RichText::new(language.text("Search results", "搜索结果")).size(16.0),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("x").on_hover_text("Close search").clicked() {
+                        if ui
+                            .small_button("x")
+                            .on_hover_text(language.text("Close search", "关闭搜索"))
+                            .clicked()
+                        {
                             self.show_search = false;
                         }
                     });
@@ -1218,8 +1566,11 @@ impl CsvApp {
                     .show(ui, |ui| {
                         for result in &self.search_results {
                             let row = result.row_index;
-                            let label =
-                                format!("Row {}  |  {} matches", row + 1, result.matches.len());
+                            let label = if language.is_chinese() {
+                                format!("第 {} 行  |  {} 处匹配", row + 1, result.matches.len())
+                            } else {
+                                format!("Row {}  |  {} matches", row + 1, result.matches.len())
+                            };
                             if ui
                                 .add_sized(
                                     [ui.available_width(), 28.0],
@@ -1259,24 +1610,26 @@ impl CsvApp {
     }
 
     fn export_window(&mut self, ctx: &Context) {
+        let language = self.language;
+        let accent_color = self.accent_color;
         let Some(info) = &self.info else { return };
         let Some(state) = &mut self.export else {
             return;
         };
         let mut do_export = false;
         let mut cancel = false;
-        egui::Window::new("Export CSV")
+        egui::Window::new(language.text("Export CSV", "导出 CSV"))
             .collapsible(false)
             .resizable(true)
             .default_width(460.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Columns").strong());
+                    ui.label(RichText::new(language.text("Columns", "列")).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("None").clicked() {
+                        if ui.small_button(language.text("None", "全不选")).clicked() {
                             state.columns.fill(false);
                         }
-                        if ui.small_button("All").clicked() {
+                        if ui.small_button(language.text("All", "全选")).clicked() {
                             state.columns.fill(true);
                         }
                     });
@@ -1297,10 +1650,10 @@ impl CsvApp {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Row range").strong());
+                    ui.label(RichText::new(language.text("Row range", "行范围")).strong());
                     ui.add_space(8.0);
                     ui.add(TextEdit::singleline(&mut state.from).desired_width(80.0));
-                    ui.label("to");
+                    ui.label(language.text("to", "至"));
                     ui.add(TextEdit::singleline(&mut state.to).desired_width(80.0));
                 });
                 if !state.error.is_empty() {
@@ -1308,10 +1661,11 @@ impl CsvApp {
                 }
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if primary_button(ui, "Export").clicked() {
+                    if primary_button(ui, language.text("Export", "导出"), accent_color).clicked()
+                    {
                         do_export = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(language.text("Cancel", "取消")).clicked() {
                         cancel = true;
                     }
                 });
@@ -1329,6 +1683,8 @@ impl eframe::App for CsvApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_messages(&ctx);
+        let language = self.language;
+        let accent_color = self.accent_color;
         if ctx.input(|i| i.key_pressed(Key::O) && (i.modifiers.command || i.modifiers.ctrl)) {
             self.choose_open(&ctx);
         }
@@ -1340,6 +1696,15 @@ impl eframe::App for CsvApp {
         {
             ctx.copy_text(self.detail_text.clone());
         }
+        egui::Panel::top("window-title-bar")
+            .exact_size(36.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(SURFACE_BG)
+                    .inner_margin(Margin::symmetric(12, 5))
+                    .stroke(Stroke::new(1.0, GRID_LINE)),
+            )
+            .show(ui, |ui| self.title_bar(ui, &ctx));
         egui::Panel::top("toolbar")
             .frame(
                 egui::Frame::new()
@@ -1363,16 +1728,20 @@ impl eframe::App for CsvApp {
                     } else if let Some(error) = self.error.take() {
                         ui.colored_label(DANGER, error);
                     } else if let Some(info) = &self.info {
-                        ui.colored_label(ACCENT, "Ready");
+                        ui.colored_label(accent_color, language.text("Ready", "就绪"));
                         ui.label(
-                            RichText::new(format!(
-                                "{} rows  |  {} columns",
-                                info.row_count, info.column_count
-                            ))
+                            RichText::new(if language.is_chinese() {
+                                format!("{} 行  |  {} 列", info.row_count, info.column_count)
+                            } else {
+                                format!("{} rows  |  {} columns", info.row_count, info.column_count)
+                            })
                             .color(TEXT_MUTED),
                         );
                     } else {
-                        ui.label(RichText::new("No file open").color(TEXT_MUTED));
+                        ui.label(
+                            RichText::new(language.text("No file open", "未打开文件"))
+                                .color(TEXT_MUTED),
+                        );
                     }
                     if let Some((start, end)) = self
                         .row_selection
@@ -1380,23 +1749,35 @@ impl eframe::App for CsvApp {
                     {
                         ui.separator();
                         ui.label(
-                            RichText::new(format!("{} rows selected", end - start + 1))
-                                .color(TEXT_SECONDARY),
+                            RichText::new(if language.is_chinese() {
+                                format!("已选择 {} 行", end - start + 1)
+                            } else {
+                                format!("{} rows selected", end - start + 1)
+                            })
+                            .color(TEXT_SECONDARY),
                         );
                     }
                     let selected_columns = self.col_selection.count();
                     if selected_columns > 0 {
                         ui.separator();
                         ui.label(
-                            RichText::new(format!("{} columns selected", selected_columns))
-                                .color(TEXT_SECONDARY),
+                            RichText::new(if language.is_chinese() {
+                                format!("已选择 {} 列", selected_columns)
+                            } else {
+                                format!("{} columns selected", selected_columns)
+                            })
+                            .color(TEXT_SECONDARY),
                         );
                     }
                     if let Some((row, col)) = self.selected_cell {
                         ui.separator();
                         ui.label(
-                            RichText::new(format!("Cell R{} C{}", row + 1, col + 1))
-                                .color(TEXT_MUTED),
+                            RichText::new(if language.is_chinese() {
+                                format!("单元格 第{}行 第{}列", row + 1, col + 1)
+                            } else {
+                                format!("Cell R{} C{}", row + 1, col + 1)
+                            })
+                            .color(TEXT_MUTED),
                         );
                     }
                 });
@@ -1408,9 +1789,18 @@ impl eframe::App for CsvApp {
                     ui.vertical_centered(|ui| {
                         ui.add_space(((ui.available_height() - 110.0) * 0.42).max(24.0));
                         ui.heading(RichText::new("CSV Reader").size(24.0));
-                        ui.label(RichText::new("No file selected").color(TEXT_MUTED));
+                        ui.label(
+                            RichText::new(language.text("No file selected", "尚未选择文件"))
+                                .color(TEXT_MUTED),
+                        );
                         ui.add_space(14.0);
-                        if primary_button(ui, "Open CSV file").clicked() {
+                        if primary_button(
+                            ui,
+                            language.text("Open CSV file", "打开 CSV 文件"),
+                            accent_color,
+                        )
+                        .clicked()
+                        {
                             self.choose_open(&ctx);
                         }
                         if let Some(busy) = &self.busy {
@@ -1431,10 +1821,21 @@ impl eframe::App for CsvApp {
         if self.busy.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        self.window_resize_handles(ui, &ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(
+            SETTINGS_LANGUAGE_KEY,
+            self.language.storage_value().to_string(),
+        );
+        storage.set_string(SETTINGS_ACCENT_KEY, color_to_hex(self.accent_color));
     }
 }
 
-fn configure_style(ctx: &Context) {
+fn configure_style(ctx: &Context, accent_color: Color32) {
+    let accent_hover = mix_color(accent_color, Color32::WHITE, 0.14);
+    let accent_dark = mix_color(APP_BG, accent_color, 0.34);
     ctx.set_theme(egui::Theme::Dark);
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
@@ -1477,10 +1878,10 @@ fn configure_style(ctx: &Context) {
     visuals.code_bg_color = TABLE_BG;
     visuals.warn_fg_color = WARNING;
     visuals.error_fg_color = DANGER;
-    visuals.hyperlink_color = ACCENT_HOVER;
-    visuals.selection.bg_fill = ACCENT_DARK;
+    visuals.hyperlink_color = accent_hover;
+    visuals.selection.bg_fill = accent_dark;
     visuals.selection.stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.text_cursor.stroke = Stroke::new(1.5, ACCENT);
+    visuals.text_cursor.stroke = Stroke::new(1.5, accent_color);
 
     visuals.widgets.noninteractive.bg_fill = PANEL_BG;
     visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
@@ -1494,12 +1895,12 @@ fn configure_style(ctx: &Context) {
     visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
     visuals.widgets.hovered.bg_fill = RAISED_BG;
     visuals.widgets.hovered.weak_bg_fill = RAISED_BG;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent_color);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(4);
-    visuals.widgets.active.bg_fill = ACCENT_DARK;
-    visuals.widgets.active.weak_bg_fill = ACCENT_DARK;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    visuals.widgets.active.bg_fill = accent_dark;
+    visuals.widgets.active.weak_bg_fill = accent_dark;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent_color);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     visuals.widgets.active.corner_radius = CornerRadius::same(4);
     visuals.widgets.open = visuals.widgets.active;
@@ -1507,18 +1908,98 @@ fn configure_style(ctx: &Context) {
     ctx.set_style_of(egui::Theme::Dark, style);
 }
 
-fn primary_button(ui: &mut Ui, label: &str) -> egui::Response {
+fn primary_button(ui: &mut Ui, label: &str, accent_color: Color32) -> egui::Response {
     ui.add(
         egui::Button::new(
             RichText::new(label)
                 .strong()
-                .color(Color32::from_rgb(8, 25, 17)),
+                .color(contrasting_text(accent_color)),
         )
-        .fill(ACCENT)
-        .stroke(Stroke::new(1.0, ACCENT_HOVER))
+        .fill(accent_color)
+        .stroke(Stroke::new(
+            1.0,
+            mix_color(accent_color, Color32::WHITE, 0.14),
+        ))
         .corner_radius(CornerRadius::same(4))
         .min_size(Vec2::new(58.0, 27.0)),
     )
+}
+
+fn title_bar_control(ui: &mut Ui, label: &str, hover_fill: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(38.0, 26.0), Sense::click());
+    let fill = if response.hovered() {
+        hover_fill
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 0.0, fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(15.0),
+        TEXT_PRIMARY,
+    );
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+fn configure_fonts(ctx: &Context) {
+    let candidates = [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ];
+    let Some(bytes) = candidates.iter().find_map(|path| std::fs::read(path).ok()) else {
+        return;
+    };
+    let mut fonts = FontDefinitions::default();
+    let name = "system-cjk".to_string();
+    fonts
+        .font_data
+        .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+        family.push(name.clone());
+    }
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        family.push(name);
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn mix_color(base: Color32, overlay: Color32, amount: f32) -> Color32 {
+    let amount = amount.clamp(0.0, 1.0);
+    let channel = |a: u8, b: u8| ((a as f32 * (1.0 - amount) + b as f32 * amount).round()) as u8;
+    Color32::from_rgb(
+        channel(base.r(), overlay.r()),
+        channel(base.g(), overlay.g()),
+        channel(base.b(), overlay.b()),
+    )
+}
+
+fn contrasting_text(color: Color32) -> Color32 {
+    let luminance = 0.299 * color.r() as f32 + 0.587 * color.g() as f32 + 0.114 * color.b() as f32;
+    if luminance >= 150.0 {
+        Color32::from_rgb(8, 18, 15)
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn parse_color(value: &str) -> Option<Color32> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color32::from_rgb(red, green, blue))
+}
+
+fn color_to_hex(color: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())
 }
 
 fn side_panel_frame() -> egui::Frame {
@@ -1547,6 +2028,31 @@ fn estimated_column_width(text: &str, monospace: bool) -> f32 {
     (max_units * glyph_width + 24.0).clamp(MIN_COL_WIDTH, MAX_COL_WIDTH)
 }
 
+fn wheel_scroll_scale(logical_max: f64, physical_max: f64) -> f32 {
+    if logical_max > physical_max && physical_max > 0.0 {
+        (physical_max / logical_max).clamp(0.01, 1.0) as f32
+    } else {
+        1.0
+    }
+}
+
+fn prefetched_row_range(first_row: u32, last_row: u32, row_count: u32) -> (u32, u32) {
+    if first_row >= row_count {
+        return (row_count, row_count);
+    }
+    let visible_rows = last_row
+        .saturating_sub(first_row)
+        .clamp(1, MAX_VISIBLE_ROWS / 3);
+    let page_rows = visible_rows.max(MIN_PREFETCH_ROWS);
+    let page_start = first_row / page_rows * page_rows;
+    let start = page_start.saturating_sub(page_rows);
+    let end = page_start
+        .saturating_add(page_rows.saturating_mul(2))
+        .max(last_row)
+        .min(row_count);
+    (start, end)
+}
+
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes as f64;
@@ -1559,5 +2065,50 @@ fn format_bytes(bytes: u64) -> String {
         format!("{} B", bytes)
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_storage_values_round_trip() {
+        for language in [Language::English, Language::Chinese] {
+            assert_eq!(Language::parse(language.storage_value()), Some(language));
+        }
+        assert_eq!(Language::parse("unsupported"), None);
+    }
+
+    #[test]
+    fn accent_color_hex_round_trips() {
+        let color = Color32::from_rgb(12, 128, 254);
+        assert_eq!(color_to_hex(color), "#0C80FE");
+        assert_eq!(parse_color(&color_to_hex(color)), Some(color));
+        assert_eq!(parse_color("#XYZ123"), None);
+    }
+
+    #[test]
+    fn color_mix_clamps_amount() {
+        let base = Color32::from_rgb(10, 20, 30);
+        let overlay = Color32::from_rgb(110, 120, 130);
+        assert_eq!(mix_color(base, overlay, -1.0), base);
+        assert_eq!(mix_color(base, overlay, 2.0), overlay);
+        assert_eq!(mix_color(base, overlay, 0.5), Color32::from_rgb(60, 70, 80));
+    }
+
+    #[test]
+    fn compressed_scroll_range_preserves_wheel_distance() {
+        assert_eq!(wheel_scroll_scale(1_000.0, 1_000.0), 1.0);
+        assert_eq!(wheel_scroll_scale(320_000_000.0, 12_000_000.0), 0.0375);
+        assert_eq!(wheel_scroll_scale(10_000_000_000.0, 12_000_000.0), 0.01);
+    }
+
+    #[test]
+    fn row_prefetch_range_changes_by_pages() {
+        assert_eq!(prefetched_row_range(0, 20, 1_000), (0, 48));
+        assert_eq!(prefetched_row_range(10, 30, 1_000), (0, 48));
+        assert_eq!(prefetched_row_range(24, 44, 1_000), (0, 72));
+        assert_eq!(prefetched_row_range(990, 1_010, 1_000), (960, 1_000));
     }
 }

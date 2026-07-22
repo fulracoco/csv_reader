@@ -14,7 +14,7 @@ CSV Reader 是一款跨平台桌面应用，用于读取、搜索、编辑和导
 - 表格仅展示长内容预览，点击后可查看单元格完整内容
 - 支持行列选择、单元格编辑和连续行范围导出
 - 自动识别逗号、制表符、分号和竖线分隔符
-- 支持 UTF-8，以及带 BOM 的 UTF-16 LE/BE 输入文件
+- 自动识别 UTF-8、UTF-16 LE/BE、GBK/GB18030、Big5、日韩编码及常见传统单字节编码
 
 ![CSV Reader 搜索结果](screenshot-search.png)
 
@@ -77,25 +77,26 @@ sudo apt install libx11-dev libxi-dev libxrandr-dev libxcursor-dev \
 ```bash
 git clone https://github.com/fulracoco/csv_reader.git csv-reader
 cd csv-reader
-cargo run --manifest-path src-tauri/Cargo.toml
+cargo run
 ```
 
 ### 常用命令
 
 | 命令 | 用途 |
 |---|---|
-| `cargo run --manifest-path src-tauri/Cargo.toml` | 启动原生 egui 开发版应用 |
-| `cargo build --manifest-path src-tauri/Cargo.toml --release` | 构建优化后的原生二进制文件 |
-| 先运行 `cargo build --manifest-path src-tauri/Cargo.toml --release`，再运行 `cargo packager --manifest-path src-tauri/Cargo.toml --release` | 构建并打包当前平台 |
-| 修改 `src-tauri/Cargo.toml` 中的 `version` | 更新唯一应用版本源 |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | 编译并运行 Rust 测试 |
+| `cargo run` | 启动原生 egui 开发版应用 |
+| `cargo build --release` | 构建优化后的原生二进制文件 |
+| 先运行 `cargo build --release`，再运行 `cargo packager --release` | 构建并打包当前平台 |
+| 修改 `Cargo.toml` 中的 `version` | 更新唯一应用版本源 |
+| `cargo test` | 编译并运行 Rust 测试 |
 
 ## 项目架构
 
 | 路径 | 职责 |
 |---|---|
-| `src-tauri/src/app.rs` | 原生 egui 界面、虚拟表格、交互、搜索、编辑和导出 |
-| `src-tauri/src/csv_engine.rs` | 内存映射、索引、解析、缓存、搜索、编辑和导出 |
+| `src/app.rs` | 原生 egui 界面、虚拟表格、交互、搜索、编辑和导出 |
+| `src/csv_engine.rs` | 内存映射、索引、解析、缓存、搜索、编辑和导出 |
+| `icons/` | 桌面端及各平台应用图标 |
 | `.github/workflows/build.yml` | 跨平台构建与 GitHub Release 发布 |
 
 应用通过内存映射访问文件，并在首次扫描时记录每一行的字节偏移。可见行按需解析，并保留在 500 行缓存中。搜索会并行扫描各行，不创建持久搜索索引；界面最多返回 500 条结果。

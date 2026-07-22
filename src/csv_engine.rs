@@ -1,3 +1,7 @@
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+#[cfg(test)]
+use encoding_rs::GBK;
+use encoding_rs::{Encoding, GB18030, UTF_8};
 use memchr::{memchr2_iter, memchr_iter, memmem};
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -11,6 +15,11 @@ use std::sync::Arc;
 const MAX_CELL_PREVIEW: usize = 500;
 const CACHE_MAX_ROWS: usize = 500;
 const CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const ENCODING_UTF8: &str = "utf8";
+const ENCODING_UTF16_LE: &str = "utf16le";
+const ENCODING_UTF16_BE: &str = "utf16be";
+const ENCODING_GBK: &str = "gbk";
+const ENCODING_GB18030: &str = "gb18030";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ─── Public data types ───────────────────────────────────────────────────────
@@ -23,6 +32,7 @@ pub struct OpenResult {
     pub row_count: u32,
     pub column_count: u32,
     pub headers: Vec<String>,
+    pub encoding: String,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +149,7 @@ impl CsvEngine {
             offsets: Arc::new(RowOffsets::empty()),
             headers: Vec::new(),
             delimiter: b',',
-            encoding: String::from("utf8"),
+            encoding: String::from(ENCODING_UTF8),
             bom_offset: 0,
             cache: HashMap::with_capacity(CACHE_MAX_ROWS),
             cache_order: Vec::with_capacity(CACHE_MAX_ROWS),
@@ -155,7 +165,7 @@ impl CsvEngine {
         let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Cannot mmap file: {}", e))? };
 
         let file_size = mmap.len() as u64;
-        let (encoding, bom_offset) = detect_bom(&mmap);
+        let (encoding, bom_offset) = detect_encoding(&mmap);
 
         let offsets = build_index(&mmap, bom_offset, &encoding);
 
@@ -178,6 +188,7 @@ impl CsvEngine {
                 row_count: 0,
                 column_count: 0,
                 headers: Vec::new(),
+                encoding: encoding_display_name(&self.encoding),
             });
         }
 
@@ -207,6 +218,7 @@ impl CsvEngine {
             row_count,
             column_count,
             headers,
+            encoding: encoding_display_name(&self.encoding),
         })
     }
 
@@ -496,7 +508,7 @@ impl CsvEngine {
         self.file_path.clear();
         self.file_size = 0;
         self.delimiter = b',';
-        self.encoding = String::from("utf8");
+        self.encoding = String::from(ENCODING_UTF8);
         self.bom_offset = 0;
     }
 
@@ -549,7 +561,7 @@ impl CsvEngine {
         }
 
         let total = (offsets.len() - 1) as u32;
-        let is_utf8 = encoding == "utf8";
+        let is_utf8 = encoding == ENCODING_UTF8;
         let query_is_ascii = query.is_ascii();
         let query_bytes = query.as_bytes();
         let query_lower = (!case_sensitive).then(|| query.to_lowercase());
@@ -774,24 +786,38 @@ fn create_temp_file(source_path: &Path) -> Result<(PathBuf, File), String> {
 
 fn write_encoded(writer: &mut impl Write, text: &str, encoding: &str) -> std::io::Result<()> {
     match encoding {
-        "utf16le" => {
+        ENCODING_UTF16_LE => {
             for unit in text.encode_utf16() {
                 writer.write_all(&unit.to_le_bytes())?;
             }
         }
-        "utf16be" => {
+        ENCODING_UTF16_BE => {
             for unit in text.encode_utf16() {
                 writer.write_all(&unit.to_be_bytes())?;
             }
         }
-        _ => writer.write_all(text.as_bytes())?,
+        ENCODING_UTF8 => writer.write_all(text.as_bytes())?,
+        _ => {
+            let codec = codec_for_encoding(encoding);
+            let (encoded, _, had_errors) = codec.encode(text);
+            if had_errors {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Text contains characters that cannot be represented in {}",
+                        encoding_display_name(encoding)
+                    ),
+                ));
+            }
+            writer.write_all(encoded.as_ref())?;
+        }
     }
     Ok(())
 }
 
 fn line_ending_len(row_bytes: &[u8], encoding: &str) -> usize {
     match encoding {
-        "utf16le" => {
+        ENCODING_UTF16_LE => {
             if row_bytes.ends_with(&[0x0D, 0x00, 0x0A, 0x00]) {
                 4
             } else if row_bytes.ends_with(&[0x0A, 0x00]) || row_bytes.ends_with(&[0x0D, 0x00]) {
@@ -800,7 +826,7 @@ fn line_ending_len(row_bytes: &[u8], encoding: &str) -> usize {
                 0
             }
         }
-        "utf16be" => {
+        ENCODING_UTF16_BE => {
             if row_bytes.ends_with(&[0x00, 0x0D, 0x00, 0x0A]) {
                 4
             } else if row_bytes.ends_with(&[0x00, 0x0A]) || row_bytes.ends_with(&[0x00, 0x0D]) {
@@ -961,15 +987,81 @@ fn extract_match_context(cell_text: &str, query: &str, query_lower: Option<&str>
     preview
 }
 
-fn detect_bom(data: &[u8]) -> (String, u64) {
+fn detect_encoding(data: &[u8]) -> (String, u64) {
     if data.len() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
-        (String::from("utf8"), 3)
+        (String::from(ENCODING_UTF8), 3)
     } else if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xFE {
-        (String::from("utf16le"), 2)
+        (String::from(ENCODING_UTF16_LE), 2)
     } else if data.len() >= 2 && data[0] == 0xFE && data[1] == 0xFF {
-        (String::from("utf16be"), 2)
+        (String::from(ENCODING_UTF16_BE), 2)
+    } else if let Some(encoding) = detect_utf16_without_bom(data) {
+        (String::from(encoding), 0)
+    } else if std::str::from_utf8(data).is_ok() {
+        (String::from(ENCODING_UTF8), 0)
+    } else if contains_gb18030_four_byte_sequence(data) {
+        (String::from(ENCODING_GB18030), 0)
     } else {
-        (String::from("utf8"), 0)
+        // ISO-2022-JP can contain CSV syntax bytes while in a shifted state,
+        // which is incompatible with this engine's byte-level random-access index.
+        let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+        detector.feed(data, true);
+        let detected = detector.guess(None, Utf8Detection::Deny).name();
+        let encoding = if detected.eq_ignore_ascii_case("GBK") {
+            ENCODING_GBK
+        } else {
+            detected
+        };
+        (encoding.to_string(), 0)
+    }
+}
+
+fn detect_utf16_without_bom(data: &[u8]) -> Option<&'static str> {
+    if data.len() < 4 || !data.len().is_multiple_of(2) {
+        return None;
+    }
+    let sample_len = data.len().min(64 * 1024) & !1;
+    let pairs = sample_len / 2;
+    let mut even_zeroes = 0usize;
+    let mut odd_zeroes = 0usize;
+    for pair in data[..sample_len].chunks_exact(2) {
+        even_zeroes += usize::from(pair[0] == 0);
+        odd_zeroes += usize::from(pair[1] == 0);
+    }
+    let minimum_zeroes = (pairs / 10).max(2);
+    if odd_zeroes >= minimum_zeroes && odd_zeroes >= even_zeroes.saturating_mul(4) {
+        Some(ENCODING_UTF16_LE)
+    } else if even_zeroes >= minimum_zeroes && even_zeroes >= odd_zeroes.saturating_mul(4) {
+        Some(ENCODING_UTF16_BE)
+    } else {
+        None
+    }
+}
+
+fn contains_gb18030_four_byte_sequence(data: &[u8]) -> bool {
+    data.windows(4).any(|bytes| {
+        (0x81..=0xFE).contains(&bytes[0])
+            && bytes[1].is_ascii_digit()
+            && (0x81..=0xFE).contains(&bytes[2])
+            && bytes[3].is_ascii_digit()
+    })
+}
+
+fn encoding_display_name(encoding: &str) -> String {
+    match encoding {
+        ENCODING_UTF8 => "UTF-8".to_string(),
+        ENCODING_UTF16_LE => "UTF-16 LE".to_string(),
+        ENCODING_UTF16_BE => "UTF-16 BE".to_string(),
+        ENCODING_GBK | "GBK" => "GBK".to_string(),
+        ENCODING_GB18030 => "GB18030".to_string(),
+        _ => encoding.to_string(),
+    }
+}
+
+fn codec_for_encoding(encoding: &str) -> &'static Encoding {
+    if encoding == ENCODING_GB18030 {
+        GB18030
+    } else {
+        Encoding::for_label(encoding.as_bytes()).unwrap_or(UTF_8)
     }
 }
 
@@ -984,8 +1076,8 @@ fn build_index(data: &[u8], bom_offset: u64, encoding: &str) -> RowOffsets {
     }
 
     match encoding {
-        "utf16le" => build_index_utf16le(data, bom, &mut offsets, file_size),
-        "utf16be" => build_index_utf16be(data, bom, &mut offsets, file_size),
+        ENCODING_UTF16_LE => build_index_utf16le(data, bom, &mut offsets, file_size),
+        ENCODING_UTF16_BE => build_index_utf16be(data, bom, &mut offsets, file_size),
         _ => build_index_utf8(data, bom, &mut offsets, file_size),
     }
 
@@ -1144,16 +1236,17 @@ fn read_row_text(
     let bytes = &mmap[start..end];
 
     match encoding {
-        "utf16le" => {
+        ENCODING_UTF16_LE => {
             if bytes.len() < 2 {
                 return String::new();
             }
-            let u16_len = bytes.len() / 2;
-            let u16_slice: &[u16] =
-                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u16, u16_len) };
-            String::from_utf16_lossy(u16_slice)
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            String::from_utf16_lossy(&units)
         }
-        "utf16be" => {
+        ENCODING_UTF16_BE => {
             if bytes.len() < 2 {
                 return String::new();
             }
@@ -1163,7 +1256,11 @@ fn read_row_text(
                 .collect();
             String::from_utf16_lossy(&swapped)
         }
-        _ => String::from_utf8_lossy(bytes).into_owned(),
+        ENCODING_UTF8 => String::from_utf8_lossy(bytes).into_owned(),
+        _ => codec_for_encoding(encoding)
+            .decode_without_bom_handling(bytes)
+            .0
+            .into_owned(),
     }
 }
 
@@ -1249,6 +1346,7 @@ fn format_csv_row(cells: &[String], delimiter: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use encoding_rs::{BIG5, EUC_JP, EUC_KR, SHIFT_JIS, WINDOWS_1252};
     use rayon::ThreadPoolBuilder;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1278,6 +1376,175 @@ mod tests {
             });
         }
         bytes
+    }
+
+    fn legacy_fixture(text: &str, encoding: &'static encoding_rs::Encoding) -> Vec<u8> {
+        let (bytes, _, had_errors) = encoding.encode(text);
+        assert!(!had_errors, "fixture must be representable");
+        bytes.into_owned()
+    }
+
+    #[test]
+    fn detects_common_csv_encodings_without_manual_selection() {
+        assert_eq!(
+            detect_encoding("姓名,城市\n张三,北京".as_bytes()),
+            (ENCODING_UTF8.to_string(), 0)
+        );
+
+        let gbk = legacy_fixture("姓名,城市\n张三,北京", GBK);
+        assert_eq!(detect_encoding(&gbk), (ENCODING_GBK.to_string(), 0));
+
+        let utf16_le: Vec<u8> = "name,城市\nvalue,北京"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            detect_encoding(&utf16_le),
+            (ENCODING_UTF16_LE.to_string(), 0)
+        );
+
+        let gb18030 = legacy_fixture("name,value\nemoji,😀", GB18030);
+        assert!(contains_gb18030_four_byte_sequence(&gb18030));
+        assert_eq!(detect_encoding(&gb18030), (ENCODING_GB18030.to_string(), 0));
+    }
+
+    #[test]
+    fn opens_searches_edits_and_exports_gbk_csv() {
+        let path = temp_path("gbk");
+        let export_path = temp_path("gbk-export");
+        fs::write(
+            &path,
+            legacy_fixture("姓名,城市\r\n张三,北京\r\n李四,上海", GBK),
+        )
+        .expect("GBK fixture should be writable");
+
+        let mut engine = CsvEngine::new();
+        let info = engine
+            .open(path.to_str().expect("temporary path should be valid UTF-8"))
+            .expect("GBK fixture should open");
+        assert_eq!(info.encoding, "GBK");
+        assert_eq!(info.headers, ["姓名", "城市"]);
+        assert_eq!(
+            engine.get_rows(0, 2, 0, 2).expect("GBK rows should decode")[0].cells,
+            ["张三", "北京"]
+        );
+
+        let results = engine
+            .search_with_progress("上海", None, false, 10, |_, _| {})
+            .expect("GBK text should be searchable");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].row_index, 1);
+
+        engine
+            .update_cell(0, 1, "广州")
+            .expect("GBK cell should be editable");
+        let source_bytes = fs::read(&path).expect("edited fixture should be readable");
+        assert!(std::str::from_utf8(&source_bytes).is_err());
+        assert_eq!(
+            GBK.decode_without_bom_handling(&source_bytes).0,
+            "姓名,城市\r\n张三,广州\r\n李四,上海"
+        );
+
+        engine
+            .export_csv(
+                export_path
+                    .to_str()
+                    .expect("temporary export path should be valid UTF-8"),
+                &[0, 1],
+                0,
+                1,
+            )
+            .expect("GBK rows should export as UTF-8");
+        let exported = fs::read(&export_path).expect("export should be readable");
+        assert!(exported.starts_with(&[0xEF, 0xBB, 0xBF]));
+        assert_eq!(
+            std::str::from_utf8(&exported[3..]).expect("export should be UTF-8"),
+            "姓名,城市\n张三,广州\n李四,上海\n"
+        );
+
+        engine.close();
+        fs::remove_file(path).expect("fixture should be removable");
+        fs::remove_file(export_path).expect("export should be removable");
+    }
+
+    #[test]
+    fn detects_additional_legacy_encodings() {
+        let samples = [
+            (
+                BIG5,
+                "姓名,城市,備註\n陳大文,臺北,繁體中文資料\n林美玲,高雄,測試內容\n王小明,臺中,聯絡資訊\n",
+            ),
+            (
+                SHIFT_JIS,
+                "名前,都市,備考\n山田太郎,東京,日本語データ\n鈴木花子,大阪,テスト内容\n佐藤一郎,京都,連絡情報\n",
+            ),
+            (
+                EUC_JP,
+                "名前,都市,備考\n山田太郎,東京,日本語データ\n鈴木花子,大阪,テスト内容\n佐藤一郎,京都,連絡情報\n",
+            ),
+            (
+                EUC_KR,
+                "이름,도시,비고\n김민수,서울,한국어 자료\n이영희,부산,테스트 내용\n박철수,대구,연락 정보\n",
+            ),
+            (
+                WINDOWS_1252,
+                "name,city,notes\nAndré,Paris,résumé\nJürgen,München,größer\nFrançois,Zürich,élève\n",
+            ),
+        ];
+
+        for (encoding, text) in samples {
+            let bytes = legacy_fixture(text, encoding);
+            let (detected, bom_offset) = detect_encoding(&bytes);
+            assert_eq!(bom_offset, 0);
+            assert_eq!(
+                codec_for_encoding(&detected),
+                encoding,
+                "failed to detect {} (reported {detected})",
+                encoding.name()
+            );
+            assert_eq!(
+                codec_for_encoding(&detected)
+                    .decode_without_bom_handling(&bytes)
+                    .0,
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn opens_and_edits_big5_csv() {
+        let path = temp_path("big5");
+        fs::write(
+            &path,
+            legacy_fixture(
+                "姓名,城市,備註\r\n陳大文,臺北,繁體中文資料\r\n林美玲,高雄,測試內容",
+                BIG5,
+            ),
+        )
+        .expect("Big5 fixture should be writable");
+
+        let mut engine = CsvEngine::new();
+        let info = engine
+            .open(path.to_str().expect("temporary path should be valid UTF-8"))
+            .expect("Big5 fixture should open");
+        assert_eq!(info.encoding, BIG5.name());
+        assert_eq!(info.headers, ["姓名", "城市", "備註"]);
+        assert_eq!(
+            engine.get_rows(0, 1, 0, 3).expect("Big5 row should decode")[0].cells,
+            ["陳大文", "臺北", "繁體中文資料"]
+        );
+
+        engine
+            .update_cell(0, 1, "臺中")
+            .expect("Big5 cell should be editable");
+        let edited = fs::read(&path).expect("edited Big5 fixture should be readable");
+        assert_eq!(
+            BIG5.decode_without_bom_handling(&edited).0,
+            "姓名,城市,備註\r\n陳大文,臺中,繁體中文資料\r\n林美玲,高雄,測試內容"
+        );
+
+        engine.close();
+        fs::remove_file(path).expect("fixture should be removable");
     }
 
     #[test]

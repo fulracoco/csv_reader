@@ -46,7 +46,7 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> src-tauri/target'
+          workspaces: '. -> target'
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -57,13 +57,13 @@ jobs:
       - name: Verify tag version
         shell: bash
         run: |
-          APP_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          APP_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           test "${TAG_VERSION}" = "${APP_VERSION}" || { echo "Tag ${TAG_VERSION} does not match ${APP_VERSION}"; exit 1; }
           echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Build native binary
-        run: cargo build --manifest-path src-tauri/Cargo.toml --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
@@ -71,15 +71,15 @@ jobs:
       - name: Build platform package
         timeout-minutes: 5
         continue-on-error: true
-        run: cargo packager --manifest-path src-tauri/Cargo.toml --release --target ${{ matrix.target }}
+        run: cargo packager --release --target ${{ matrix.target }}
 
       - name: Stage artifacts
         shell: bash
         run: |
           mkdir -p dist
-          BIN="src-tauri/target/${{ matrix.target }}/release/csv-reader${{ runner.os == 'Windows' && '.exe' || '' }}"
+          BIN="target/${{ matrix.target }}/release/csv-reader${{ runner.os == 'Windows' && '.exe' || '' }}"
           cp "${BIN}" "dist/${{ matrix.artifact }}-v${APP_VERSION}${{ runner.os == 'Windows' && '.exe' || '' }}"
-          find src-tauri/target -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -exec cp {} dist/ \; || true
+          find target -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -exec cp {} dist/ \; || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5

@@ -4,9 +4,8 @@ dist/
 .claude/
 .DS_Store
 Thumbs.db
-src-tauri/target/
-src-tauri/gen/
 /target/
+/gen/
 /bundles/
 /native/target
 /native/csv-native.node
