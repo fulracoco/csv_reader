@@ -31,6 +31,7 @@ const TEXT_MUTED: Color32 = Color32::from_rgb(112, 126, 121);
 const ACCENT: Color32 = Color32::from_rgb(70, 196, 137);
 const WARNING: Color32 = Color32::from_rgb(232, 175, 93);
 const DANGER: Color32 = Color32::from_rgb(235, 116, 116);
+const SUCCESS: Color32 = Color32::from_rgb(96, 211, 155);
 const SETTINGS_LANGUAGE_KEY: &str = "language";
 const SETTINGS_ACCENT_KEY: &str = "accent_color";
 
@@ -1135,23 +1136,35 @@ impl CsvApp {
 
     fn toolbar(&mut self, ui: &mut Ui, ctx: &Context) {
         let language = self.language;
-        ui.add_space(3.0);
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
-            if primary_button(ui, language.text("Open", "打开"), self.accent_color).clicked() {
-                self.choose_open(ctx);
-            }
+            ui.add_enabled_ui(self.busy.is_none(), |ui| {
+                if primary_button(
+                    ui,
+                    language.text("＋  Open file", "＋  打开文件"),
+                    self.accent_color,
+                )
+                .on_hover_text(language.text("Open a CSV file  Ctrl+O", "打开 CSV 文件  Ctrl+O"))
+                .clicked()
+                {
+                    self.choose_open(ctx);
+                }
+            });
             if let Some(info) = self.info.clone() {
-                if ui.button(language.text("Export", "导出")).clicked() {
+                if secondary_button(ui, language.text("⇩  Export", "⇩  导出"))
+                    .on_hover_text(
+                        language.text("Export selected rows and columns", "导出选中的行和列"),
+                    )
+                    .clicked()
+                {
                     self.open_export();
                 }
                 ui.separator();
                 egui::ComboBox::from_id_salt("density")
-                    .selected_text(if language.is_chinese() {
-                        format!("行高 {} px", self.row_height as u32)
-                    } else {
-                        format!("{} px rows", self.row_height as u32)
-                    })
+                    .width(132.0)
+                    .selected_text(density_label(language, self.row_height))
                     .show_ui(ui, |ui| {
+                        menu_section_label(ui, language.text("ROW DENSITY", "行密度"));
                         for (english, chinese, height) in [
                             ("Compact", "紧凑", 24.0),
                             ("Comfortable", "舒适", 32.0),
@@ -1173,47 +1186,58 @@ impl CsvApp {
                             }
                         }
                     });
-                if ui.button(language.text("Auto width", "自动列宽")).clicked() {
+                if secondary_button(ui, language.text("↔  Auto width", "↔  自动列宽"))
+                    .on_hover_text(
+                        language.text("Fit columns to the visible data", "根据可见数据调整列宽"),
+                    )
+                    .clicked()
+                {
                     self.reset_column_widths();
                 }
-                ui.separator();
-                ui.label(
-                    RichText::new(if language.is_chinese() {
-                        format!(
-                            "{} 行  |  {} 列  |  {}  |  {}",
-                            info.row_count,
-                            info.column_count,
-                            format_bytes(info.file_size),
-                            info.encoding
-                        )
-                    } else {
-                        format!(
-                            "{} rows  |  {} columns  |  {}  |  {}",
-                            info.row_count,
-                            info.column_count,
-                            format_bytes(info.file_size),
-                            info.encoding
-                        )
-                    })
-                    .color(TEXT_MUTED),
-                );
-                ui.separator();
-                ui.add(egui::Label::new(RichText::new(&info.file_name).strong()).truncate())
-                    .on_hover_text(&info.file_path);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    egui::Frame::new()
+                        .fill(SURFACE_BG)
+                        .stroke(Stroke::new(1.0, GRID_LINE))
+                        .corner_radius(CornerRadius::same(5))
+                        .inner_margin(Margin::symmetric(10, 5))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&info.file_name).strong());
+                                ui.label(
+                                    RichText::new(format_bytes(info.file_size)).color(TEXT_MUTED),
+                                );
+                            });
+                        })
+                        .response
+                        .on_hover_text(&info.file_path);
+                });
             } else {
+                ui.add_space(4.0);
                 ui.label(
-                    RichText::new(language.text("No file open", "未打开文件")).color(TEXT_MUTED),
+                    RichText::new(language.text(
+                        "Open a CSV, TSV, or text file to begin",
+                        "打开 CSV、TSV 或文本文件以开始",
+                    ))
+                    .color(TEXT_MUTED),
                 );
             }
         });
 
         if let Some(info) = self.info.clone() {
-            ui.add_space(4.0);
+            ui.add_space(7.0);
+            ui.separator();
+            ui.add_space(7.0);
             ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(language.text("SEARCH", "搜索"))
+                        .small()
+                        .strong()
+                        .color(TEXT_MUTED),
+                );
                 let search = ui.add(
                     TextEdit::singleline(&mut self.search_query)
-                        .desired_width(280.0)
-                        .hint_text(language.text("Search values", "搜索内容")),
+                        .desired_width((ui.available_width() * 0.34).clamp(180.0, 360.0))
+                        .hint_text(language.text("Search values…", "搜索内容…")),
                 );
                 let enter_pressed = search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 if primary_button(ui, language.text("Find", "查找"), self.accent_color).clicked()
@@ -1253,26 +1277,46 @@ impl CsvApp {
                     &mut self.search_case_sensitive,
                     language.text("Case sensitive", "区分大小写"),
                 );
-                if !self.search_status.is_empty() {
-                    ui.label(RichText::new(&self.search_status).color(TEXT_MUTED));
+                if !self.search_results.is_empty()
+                    && secondary_button(
+                        ui,
+                        &if language.is_chinese() {
+                            format!("{} 个结果", self.search_results.len())
+                        } else {
+                            format!("{} results", self.search_results.len())
+                        },
+                    )
+                    .clicked()
+                {
+                    self.show_search = true;
                 }
             });
         }
-        ui.add_space(3.0);
+        ui.add_space(2.0);
     }
 
     fn title_bar(&mut self, ui: &mut Ui, ctx: &Context) {
         let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.horizontal(|ui| {
+            egui::Frame::new()
+                .fill(self.accent_color)
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("CSV")
+                            .strong()
+                            .size(10.0)
+                            .color(contrasting_text(self.accent_color)),
+                    );
+                });
             let title = ui.add(
-                egui::Label::new(
-                    RichText::new("CSV Reader")
-                        .strong()
-                        .color(self.accent_color),
-                )
-                .sense(Sense::click_and_drag()),
+                egui::Label::new(RichText::new("CSV Reader").strong().color(TEXT_PRIMARY))
+                    .sense(Sense::click_and_drag()),
             );
-            let drag_width = (ui.available_width() - 220.0).max(12.0);
+            self.file_menu(ui, ctx);
+            self.view_menu(ui);
+            let drag_width = (ui.available_width() - 226.0).max(12.0);
             let drag = ui.allocate_response(Vec2::new(drag_width, 26.0), Sense::click_and_drag());
             let drag_response = title.union(drag);
             if drag_response.double_clicked() {
@@ -1294,6 +1338,90 @@ impl CsvApp {
                 }
                 ui.separator();
                 self.settings_menu(ui, ctx);
+            });
+        });
+    }
+
+    fn file_menu(&mut self, ui: &mut Ui, ctx: &Context) {
+        let language = self.language;
+        ui.menu_button(language.text("File", "文件"), |ui| {
+            ui.set_min_width(240.0);
+            menu_section_label(ui, language.text("FILE", "文件"));
+            if menu_action(ui, language.text("Open file…", "打开文件…"), "Ctrl+O", true) {
+                ui.close();
+                self.choose_open(ctx);
+            }
+            if menu_action(
+                ui,
+                language.text("Export selection…", "导出所选内容…"),
+                "",
+                self.info.is_some(),
+            ) {
+                ui.close();
+                self.open_export();
+            }
+            if let Some(info) = &self.info {
+                ui.separator();
+                menu_section_label(ui, language.text("CURRENT FILE", "当前文件"));
+                ui.add(egui::Label::new(RichText::new(&info.file_name).strong()).truncate())
+                    .on_hover_text(&info.file_path);
+                ui.label(
+                    RichText::new(format!(
+                        "{}  ·  {} × {}  ·  {}",
+                        format_bytes(info.file_size),
+                        info.row_count,
+                        info.column_count,
+                        info.encoding
+                    ))
+                    .small()
+                    .color(TEXT_MUTED),
+                );
+            }
+        });
+    }
+
+    fn view_menu(&mut self, ui: &mut Ui) {
+        let language = self.language;
+        ui.menu_button(language.text("View", "视图"), |ui| {
+            ui.set_min_width(240.0);
+            menu_section_label(ui, language.text("ROW DENSITY", "行密度"));
+            for (english, chinese, height) in [
+                ("Compact", "紧凑", 24.0),
+                ("Comfortable", "舒适", 32.0),
+                ("Relaxed", "宽松", 44.0),
+                ("Spacious", "大间距", 60.0),
+            ] {
+                ui.selectable_value(
+                    &mut self.row_height,
+                    height,
+                    format!(
+                        "{}  ·  {} px",
+                        language.text(english, chinese),
+                        height as u32
+                    ),
+                );
+            }
+            ui.separator();
+            if menu_action(
+                ui,
+                language.text("Auto-fit column widths", "自动适配列宽"),
+                "",
+                self.info.is_some(),
+            ) {
+                self.reset_column_widths();
+                ui.close();
+            }
+            ui.add_enabled_ui(self.info.is_some(), |ui| {
+                ui.checkbox(
+                    &mut self.show_search,
+                    language.text("Show search results", "显示搜索结果"),
+                );
+            });
+            ui.add_enabled_ui(self.selected_cell.is_some(), |ui| {
+                ui.checkbox(
+                    &mut self.show_detail,
+                    language.text("Show cell details", "显示单元格详情"),
+                );
             });
         });
     }
@@ -1388,14 +1516,12 @@ impl CsvApp {
     fn settings_menu(&mut self, ui: &mut Ui, ctx: &Context) {
         let language = self.language;
         ui.menu_button(language.text("Settings", "设置"), |ui| {
-            ui.set_min_width(220.0);
-            ui.label(RichText::new(language.text("Language", "语言")).strong());
+            ui.set_min_width(250.0);
+            menu_section_label(ui, language.text("LANGUAGE", "语言"));
             ui.selectable_value(&mut self.language, Language::English, "English");
             ui.selectable_value(&mut self.language, Language::Chinese, "简体中文");
-            ui.add_space(6.0);
             ui.separator();
-            ui.add_space(6.0);
-            ui.label(RichText::new(language.text("Accent color", "主题色")).strong());
+            menu_section_label(ui, language.text("ACCENT COLOR", "主题色"));
 
             let mut rgb = [
                 self.accent_color.r(),
@@ -1409,9 +1535,9 @@ impl CsvApp {
                 }
                 ui.monospace(color_to_hex(self.accent_color));
             });
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                for (english, chinese, color) in [
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                for (_, _, color) in [
                     ("Green", "绿色", ACCENT),
                     ("Blue", "蓝色", Color32::from_rgb(66, 153, 225)),
                     ("Purple", "紫色", Color32::from_rgb(167, 139, 250)),
@@ -1419,13 +1545,16 @@ impl CsvApp {
                     ("Rose", "玫红", Color32::from_rgb(244, 114, 182)),
                 ] {
                     let selected = self.accent_color == color;
-                    let response = ui.add(
-                        egui::Button::new(language.text(english, chinese))
-                            .fill(mix_color(SURFACE_BG, color, 0.32))
-                            .stroke(Stroke::new(
-                                if selected { 2.0 } else { 1.0 },
-                                if selected { color } else { GRID_LINE },
-                            )),
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                    ui.painter().circle_filled(rect.center(), 9.0, color);
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        if selected { 13.0 } else { 11.0 },
+                        Stroke::new(
+                            if selected { 2.0 } else { 1.0 },
+                            if selected { TEXT_PRIMARY } else { GRID_LINE },
+                        ),
                     );
                     if response.clicked() {
                         self.apply_accent(color, ctx);
@@ -1433,7 +1562,7 @@ impl CsvApp {
                 }
             });
             if ui
-                .button(language.text("Reset color", "恢复默认颜色"))
+                .add(egui::Button::new(language.text("Reset to default", "恢复默认颜色")).small())
                 .clicked()
             {
                 self.apply_accent(ACCENT, ctx);
@@ -1459,7 +1588,7 @@ impl CsvApp {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .small_button("x")
+                            .small_button("×")
                             .on_hover_text(language.text("Close details", "关闭详情"))
                             .clicked()
                         {
@@ -1549,7 +1678,7 @@ impl CsvApp {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .small_button("x")
+                            .small_button("×")
                             .on_hover_text(language.text("Close search", "关闭搜索"))
                             .clicked()
                         {
@@ -1697,11 +1826,11 @@ impl eframe::App for CsvApp {
             ctx.copy_text(self.detail_text.clone());
         }
         egui::Panel::top("window-title-bar")
-            .exact_size(36.0)
+            .exact_size(38.0)
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE_BG)
-                    .inner_margin(Margin::symmetric(12, 5))
+                    .inner_margin(Margin::symmetric(12, 6))
                     .stroke(Stroke::new(1.0, GRID_LINE)),
             )
             .show(ui, |ui| self.title_bar(ui, &ctx));
@@ -1728,12 +1857,18 @@ impl eframe::App for CsvApp {
                     } else if let Some(error) = self.error.take() {
                         ui.colored_label(DANGER, error);
                     } else if let Some(info) = &self.info {
-                        ui.colored_label(accent_color, language.text("Ready", "就绪"));
+                        status_badge(ui, language.text("Ready", "就绪"), SUCCESS);
                         ui.label(
                             RichText::new(if language.is_chinese() {
-                                format!("{} 行  |  {} 列", info.row_count, info.column_count)
+                                format!(
+                                    "{} 行  ·  {} 列  ·  {}",
+                                    info.row_count, info.column_count, info.encoding
+                                )
                             } else {
-                                format!("{} rows  |  {} columns", info.row_count, info.column_count)
+                                format!(
+                                    "{} rows  ·  {} columns  ·  {}",
+                                    info.row_count, info.column_count, info.encoding
+                                )
                             })
                             .color(TEXT_MUTED),
                         );
@@ -1787,27 +1922,69 @@ impl eframe::App for CsvApp {
                 .frame(egui::Frame::new().fill(APP_BG))
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(((ui.available_height() - 110.0) * 0.42).max(24.0));
-                        ui.heading(RichText::new("CSV Reader").size(24.0));
-                        ui.label(
-                            RichText::new(language.text("No file selected", "尚未选择文件"))
-                                .color(TEXT_MUTED),
-                        );
-                        ui.add_space(14.0);
-                        if primary_button(
-                            ui,
-                            language.text("Open CSV file", "打开 CSV 文件"),
-                            accent_color,
-                        )
-                        .clicked()
-                        {
-                            self.choose_open(&ctx);
-                        }
-                        if let Some(busy) = &self.busy {
-                            ui.add_space(10.0);
-                            ui.spinner();
-                            ui.label(RichText::new(busy).color(WARNING));
-                        }
+                        ui.add_space(((ui.available_height() - 250.0) * 0.42).max(24.0));
+                        egui::Frame::new()
+                            .fill(PANEL_BG)
+                            .stroke(Stroke::new(1.0, GRID_LINE))
+                            .corner_radius(CornerRadius::same(10))
+                            .inner_margin(Margin::symmetric(42, 32))
+                            .show(ui, |ui| {
+                                ui.set_width(410.0);
+                                ui.vertical_centered(|ui| {
+                                    egui::Frame::new()
+                                        .fill(mix_color(APP_BG, accent_color, 0.24))
+                                        .stroke(Stroke::new(1.0, accent_color))
+                                        .corner_radius(CornerRadius::same(8))
+                                        .inner_margin(Margin::symmetric(12, 7))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new("CSV")
+                                                    .size(16.0)
+                                                    .strong()
+                                                    .color(accent_color),
+                                            );
+                                        });
+                                    ui.add_space(14.0);
+                                    ui.heading(
+                                        RichText::new(language.text(
+                                            "Explore large CSV files",
+                                            "轻松浏览大型 CSV 文件",
+                                        ))
+                                        .size(23.0),
+                                    );
+                                    ui.label(
+                                        RichText::new(language.text(
+                                            "Open, search, edit, and export tabular data without loading the whole file into memory.",
+                                            "无需将整个文件载入内存，即可打开、搜索、编辑和导出表格数据。",
+                                        ))
+                                        .color(TEXT_MUTED),
+                                    );
+                                    ui.add_space(18.0);
+                                    if primary_button(
+                                        ui,
+                                        language.text("＋  Open CSV file", "＋  打开 CSV 文件"),
+                                        accent_color,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.choose_open(&ctx);
+                                    }
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(language.text(
+                                            "CSV · TSV · TXT    Ctrl+O",
+                                            "CSV · TSV · TXT    Ctrl+O",
+                                        ))
+                                        .small()
+                                        .color(TEXT_MUTED),
+                                    );
+                                    if let Some(busy) = &self.busy {
+                                        ui.add_space(10.0);
+                                        ui.spinner();
+                                        ui.label(RichText::new(busy).color(WARNING));
+                                    }
+                                });
+                            });
                     });
                 });
         } else {
@@ -1870,8 +2047,8 @@ fn configure_style(ctx: &Context, accent_color: Color32) {
     visuals.panel_fill = APP_BG;
     visuals.window_fill = PANEL_BG;
     visuals.window_stroke = Stroke::new(1.0, GRID_LINE);
-    visuals.window_corner_radius = CornerRadius::same(6);
-    visuals.menu_corner_radius = CornerRadius::same(4);
+    visuals.window_corner_radius = CornerRadius::same(10);
+    visuals.menu_corner_radius = CornerRadius::same(8);
     visuals.faint_bg_color = SURFACE_BG;
     visuals.extreme_bg_color = TABLE_BG;
     visuals.text_edit_bg_color = Some(TABLE_BG);
@@ -1887,22 +2064,22 @@ fn configure_style(ctx: &Context, accent_color: Color32) {
     visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, GRID_LINE);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_SECONDARY);
-    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(4);
+    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
     visuals.widgets.inactive.bg_fill = SURFACE_BG;
     visuals.widgets.inactive.weak_bg_fill = SURFACE_BG;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, GRID_LINE);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_SECONDARY);
-    visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
     visuals.widgets.hovered.bg_fill = RAISED_BG;
     visuals.widgets.hovered.weak_bg_fill = RAISED_BG;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent_color);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.hovered.corner_radius = CornerRadius::same(4);
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
     visuals.widgets.active.bg_fill = accent_dark;
     visuals.widgets.active.weak_bg_fill = accent_dark;
     visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent_color);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-    visuals.widgets.active.corner_radius = CornerRadius::same(4);
+    visuals.widgets.active.corner_radius = CornerRadius::same(6);
     visuals.widgets.open = visuals.widgets.active;
     style.visuals = visuals;
     ctx.set_style_of(egui::Theme::Dark, style);
@@ -1920,9 +2097,68 @@ fn primary_button(ui: &mut Ui, label: &str, accent_color: Color32) -> egui::Resp
             1.0,
             mix_color(accent_color, Color32::WHITE, 0.14),
         ))
-        .corner_radius(CornerRadius::same(4))
+        .corner_radius(CornerRadius::same(6))
         .min_size(Vec2::new(58.0, 27.0)),
     )
+}
+
+fn secondary_button(ui: &mut Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).color(TEXT_PRIMARY))
+            .fill(SURFACE_BG)
+            .stroke(Stroke::new(1.0, GRID_LINE))
+            .corner_radius(CornerRadius::same(6))
+            .min_size(Vec2::new(58.0, 27.0)),
+    )
+}
+
+fn density_label(language: Language, row_height: f32) -> String {
+    let name = match row_height as u32 {
+        24 => language.text("Compact", "紧凑"),
+        44 => language.text("Relaxed", "宽松"),
+        60 => language.text("Spacious", "大间距"),
+        _ => language.text("Comfortable", "舒适"),
+    };
+    format!("{}  ·  {} px", name, row_height as u32)
+}
+
+fn menu_section_label(ui: &mut Ui, label: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(label).small().strong().color(TEXT_MUTED));
+    ui.add_space(2.0);
+}
+
+fn menu_action(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool) -> bool {
+    ui.horizontal(|ui| {
+        let response = ui.add_enabled(
+            enabled,
+            egui::Button::new(label)
+                .frame(false)
+                .min_size(Vec2::new(178.0, 27.0)),
+        );
+        if !shortcut.is_empty() {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(shortcut).small().color(TEXT_MUTED));
+            });
+        }
+        response
+    })
+    .inner
+    .clicked()
+}
+
+fn status_badge(ui: &mut Ui, label: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(mix_color(APP_BG, color, 0.22))
+        .stroke(Stroke::new(1.0, mix_color(color, GRID_LINE, 0.35)))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("●").small().color(color));
+                ui.label(RichText::new(label).small().strong().color(color));
+            });
+        });
 }
 
 fn title_bar_control(ui: &mut Ui, label: &str, hover_fill: Color32) -> egui::Response {

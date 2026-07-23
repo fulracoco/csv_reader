@@ -427,7 +427,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "csv-reader"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chardetng",
  "eframe",
