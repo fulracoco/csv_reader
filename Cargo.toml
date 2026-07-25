@@ -1,6 +1,6 @@
 [package]
 name = "csv-reader"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 
 [dependencies]
@@ -11,6 +11,9 @@ rfd = "0.17.2"
 memmap2 = "0.9"
 memchr = "2"
 rayon = "1"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 lto = true

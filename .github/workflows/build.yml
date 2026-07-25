@@ -79,7 +79,7 @@ jobs:
           mkdir -p dist
           BIN="target/${{ matrix.target }}/release/csv-reader${{ runner.os == 'Windows' && '.exe' || '' }}"
           cp "${BIN}" "dist/${{ matrix.artifact }}-v${APP_VERSION}${{ runner.os == 'Windows' && '.exe' || '' }}"
-          find target -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -exec cp {} dist/ \; || true
+          find target -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name 'csv-reader_*-setup.exe' \) -exec cp {} dist/ \; || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
